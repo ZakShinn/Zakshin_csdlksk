@@ -1,0 +1,1090 @@
+(async () => {
+    // ============================================================
+    // EMRHUB - XUẤT TOÀN BỘ HEALTH EXAMINATIONS RA EXCEL
+    // ============================================================
+
+    const API_URL =
+        "https://api.emrhub.vn/api/checkup/health-examinations";
+
+    // Nếu API không cho page_size=100, đổi thành 50 hoặc 10.
+    const PAGE_SIZE = 100;
+
+    // Nghỉ giữa các request để tránh gọi API quá dồn dập
+    const REQUEST_DELAY = 100;
+
+    // Số lần thử lại nếu một trang bị lỗi
+    const MAX_RETRY = 3;
+
+    console.clear();
+
+    console.log(
+        "%c🚀 EMRHub Export",
+        "font-size:18px;font-weight:bold;color:#2196f3"
+    );
+
+    // ============================================================
+    // 1. TÌM TOKEN TỰ ĐỘNG
+    // ============================================================
+
+    function decodeJwtPayload(token) {
+        try {
+            const parts = token.split(".");
+
+            if (parts.length !== 3)
+                return null;
+
+            let payload = parts[1]
+                .replace(/-/g, "+")
+                .replace(/_/g, "/");
+
+            while (payload.length % 4)
+                payload += "=";
+
+            return JSON.parse(
+                decodeURIComponent(
+                    atob(payload)
+                        .split("")
+                        .map(c =>
+                            "%" +
+                            ("00" + c.charCodeAt(0).toString(16))
+                                .slice(-2)
+                        )
+                        .join("")
+                )
+            );
+
+        } catch {
+            return null;
+        }
+    }
+
+    function isJwtExpired(token) {
+        const payload = decodeJwtPayload(token);
+
+        if (!payload?.exp)
+            return false;
+
+        return Date.now() >= payload.exp * 1000;
+    }
+
+    function searchTokenInValue(value, path = "") {
+        if (
+            value === null ||
+            value === undefined
+        ) {
+            return null;
+        }
+
+        // -----------------------------------------
+        // STRING
+        // -----------------------------------------
+
+        if (typeof value === "string") {
+
+            const trimmed = value.trim();
+
+            // Bearer TOKEN
+            const bearerMatch =
+                trimmed.match(
+                    /Bearer\s+([A-Za-z0-9._~+/=-]+)/i
+                );
+
+            if (bearerMatch) {
+                return {
+                    token: bearerMatch[1],
+                    path
+                };
+            }
+
+            // JWT xxx.yyy.zzz
+            const jwtMatch =
+                trimmed.match(
+                    /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/
+                );
+
+            if (jwtMatch) {
+                return {
+                    token: jwtMatch[0],
+                    path
+                };
+            }
+
+            // Có thể storage chứa JSON dưới dạng chuỗi
+            try {
+                const parsed = JSON.parse(trimmed);
+
+                return searchTokenInValue(
+                    parsed,
+                    path
+                );
+
+            } catch {
+                return null;
+            }
+        }
+
+        // -----------------------------------------
+        // OBJECT
+        // -----------------------------------------
+
+        if (
+            typeof value === "object"
+        ) {
+            const priorityKeys = [
+                "access_token",
+                "accessToken",
+                "access-token",
+                "token",
+                "jwt",
+                "id_token",
+                "idToken",
+                "authorization",
+                "authToken",
+                "bearerToken"
+            ];
+
+            // Ưu tiên key có tên giống token
+            for (const wanted of priorityKeys) {
+
+                for (
+                    const [key, childValue]
+                    of Object.entries(value)
+                ) {
+
+                    if (
+                        key.toLowerCase() ===
+                        wanted.toLowerCase()
+                    ) {
+
+                        const result =
+                            searchTokenInValue(
+                                childValue,
+                                path
+                                    ? `${path}.${key}`
+                                    : key
+                            );
+
+                        if (result)
+                            return result;
+                    }
+                }
+            }
+
+            // Sau đó quét toàn bộ object
+            for (
+                const [key, childValue]
+                of Object.entries(value)
+            ) {
+
+                const result =
+                    searchTokenInValue(
+                        childValue,
+                        path
+                            ? `${path}.${key}`
+                            : key
+                    );
+
+                if (result)
+                    return result;
+            }
+        }
+
+        return null;
+    }
+
+    function findToken() {
+
+        const storageList = [
+            {
+                name: "localStorage",
+                storage: localStorage
+            },
+            {
+                name: "sessionStorage",
+                storage: sessionStorage
+            }
+        ];
+
+        const priorityKeyWords = [
+            "access_token",
+            "accesstoken",
+            "token",
+            "jwt",
+            "auth",
+            "login",
+            "user",
+            "account",
+            "session"
+        ];
+
+        const candidates = [];
+
+        // -----------------------------------------
+        // Ưu tiên các storage key có vẻ liên quan
+        // -----------------------------------------
+
+        for (const item of storageList) {
+
+            for (
+                let i = 0;
+                i < item.storage.length;
+                i++
+            ) {
+
+                const key =
+                    item.storage.key(i);
+
+                if (!key)
+                    continue;
+
+                const lowerKey =
+                    key.toLowerCase();
+
+                const priority =
+                    priorityKeyWords.some(
+                        word =>
+                            lowerKey.includes(word)
+                    );
+
+                if (!priority)
+                    continue;
+
+                const raw =
+                    item.storage.getItem(key);
+
+                const result =
+                    searchTokenInValue(
+                        raw,
+                        `${item.name}.${key}`
+                    );
+
+                if (
+                    result?.token &&
+                    !isJwtExpired(result.token)
+                ) {
+                    candidates.push(result);
+                }
+            }
+        }
+
+        // -----------------------------------------
+        // Nếu chưa tìm thấy, quét hết storage
+        // -----------------------------------------
+
+        if (!candidates.length) {
+
+            for (const item of storageList) {
+
+                for (
+                    let i = 0;
+                    i < item.storage.length;
+                    i++
+                ) {
+
+                    const key =
+                        item.storage.key(i);
+
+                    if (!key)
+                        continue;
+
+                    const raw =
+                        item.storage.getItem(key);
+
+                    const result =
+                        searchTokenInValue(
+                            raw,
+                            `${item.name}.${key}`
+                        );
+
+                    if (
+                        result?.token &&
+                        !isJwtExpired(result.token)
+                    ) {
+                        candidates.push(result);
+                    }
+                }
+            }
+        }
+
+        if (!candidates.length)
+            return null;
+
+        // Ưu tiên JWT có payload hợp lệ
+        const jwtCandidate =
+            candidates.find(
+                x =>
+                    decodeJwtPayload(x.token)
+            );
+
+        return jwtCandidate || candidates[0];
+    }
+
+    const tokenResult = findToken();
+
+    if (!tokenResult) {
+
+        console.error(
+            "❌ Không tìm thấy access token trong localStorage/sessionStorage."
+        );
+
+        console.log(
+            "👉 Kiểm tra Network → request health-examinations → Request Headers → Authorization."
+        );
+
+        return;
+    }
+
+    const TOKEN =
+        tokenResult.token;
+
+    console.log(
+        `🔑 Đã tìm thấy token tại: ${tokenResult.path}`
+    );
+
+    const payload =
+        decodeJwtPayload(TOKEN);
+
+    if (payload?.exp) {
+
+        console.log(
+            "🕒 Token hết hạn:",
+            new Date(
+                payload.exp * 1000
+            ).toLocaleString()
+        );
+    }
+
+    // Không in toàn bộ token ra Console
+    console.log(
+        "✅ Token:",
+        TOKEN.slice(0, 12) +
+        "..." +
+        TOKEN.slice(-6)
+    );
+
+    // ============================================================
+    // 2. LOAD THƯ VIỆN XLSX
+    // ============================================================
+
+    if (
+        typeof XLSX === "undefined"
+    ) {
+
+        console.log(
+            "📦 Đang tải thư viện XLSX..."
+        );
+
+        try {
+
+            await new Promise(
+                (resolve, reject) => {
+
+                    const script =
+                        document.createElement(
+                            "script"
+                        );
+
+                    script.src =
+                        "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+
+                    script.onload =
+                        resolve;
+
+                    script.onerror =
+                        reject;
+
+                    document.head.appendChild(
+                        script
+                    );
+                }
+            );
+
+        } catch (error) {
+
+            console.error(
+                "❌ Không tải được XLSX:",
+                error
+            );
+
+            return;
+        }
+    }
+
+    console.log(
+        "✅ XLSX đã sẵn sàng."
+    );
+
+    // ============================================================
+    // 3. HÀM DELAY
+    // ============================================================
+
+    function sleep(ms) {
+        return new Promise(
+            resolve =>
+                setTimeout(resolve, ms)
+        );
+    }
+
+    // ============================================================
+    // 4. REQUEST API
+    // ============================================================
+
+    async function fetchPage(
+        page,
+        retry = 0
+    ) {
+
+        const url =
+            `${API_URL}?page_number=${page}&page_size=${PAGE_SIZE}`;
+
+        try {
+
+            const response =
+                await fetch(
+                    url,
+                    {
+                        method: "GET",
+
+                        // QUAN TRỌNG:
+                        // Không gửi cookie để tránh:
+                        // Access-Control-Allow-Origin: *
+                        // + credentials include
+                        credentials: "omit",
+
+                        headers: {
+                            "Accept":
+                                "application/json",
+
+                            "Authorization":
+                                `Bearer ${TOKEN}`
+                        }
+                    }
+                );
+
+            if (!response.ok) {
+
+                let errorBody = "";
+
+                try {
+                    errorBody =
+                        await response.text();
+                } catch {}
+
+                throw new Error(
+                    `HTTP ${response.status} ${response.statusText}` +
+                    (
+                        errorBody
+                            ? ` | ${errorBody}`
+                            : ""
+                    )
+                );
+            }
+
+            const json =
+                await response.json();
+
+            if (
+                json?.header?.success === false
+            ) {
+
+                throw new Error(
+                    `${json.header.res_code || ""} - ` +
+                    `${json.header.res_msg || "API trả về lỗi"}`
+                );
+            }
+
+            return json;
+
+        } catch (error) {
+
+            if (
+                retry < MAX_RETRY
+            ) {
+
+                console.warn(
+                    `⚠️ Trang ${page} lỗi - thử lại ${retry + 1}/${MAX_RETRY}`
+                );
+
+                console.warn(
+                    error.message
+                );
+
+                await sleep(
+                    1000 * (retry + 1)
+                );
+
+                return fetchPage(
+                    page,
+                    retry + 1
+                );
+            }
+
+            throw error;
+        }
+    }
+
+    // ============================================================
+    // 5. FORMAT NGÀY
+    // ============================================================
+
+    function formatDate(value) {
+
+        if (!value)
+            return "";
+
+        const s =
+            String(value);
+
+        if (
+            !/^\d{8}/.test(s)
+        ) {
+            return s;
+        }
+
+        const yyyy =
+            s.slice(0, 4);
+
+        const mm =
+            s.slice(4, 6);
+
+        const dd =
+            s.slice(6, 8);
+
+        return `${dd}/${mm}/${yyyy}`;
+    }
+
+    function formatDateTime(value) {
+
+        if (!value)
+            return "";
+
+        const s =
+            String(value);
+
+        if (
+            /^\d{12}/.test(s)
+        ) {
+
+            const yyyy =
+                s.slice(0, 4);
+
+            const mm =
+                s.slice(4, 6);
+
+            const dd =
+                s.slice(6, 8);
+
+            const hh =
+                s.slice(8, 10);
+
+            const min =
+                s.slice(10, 12);
+
+            return (
+                `${dd}/${mm}/${yyyy} ` +
+                `${hh}:${min}`
+            );
+        }
+
+        return formatDate(s);
+    }
+
+    // ============================================================
+    // 6. LẤY TRANG ĐẦU
+    // ============================================================
+
+    console.log(
+        "📥 Đang lấy trang đầu tiên..."
+    );
+
+    let firstResponse;
+
+    try {
+
+        firstResponse =
+            await fetchPage(1);
+
+    } catch (error) {
+
+        console.error(
+            "❌ Không gọi được API."
+        );
+
+        console.error(
+            error
+        );
+
+        if (
+            String(error).includes("401")
+        ) {
+            console.error(
+                "🔐 Token không đúng hoặc đã hết hạn."
+            );
+        }
+
+        return;
+    }
+
+    const firstPage =
+        firstResponse?.data;
+
+    if (
+        !firstPage ||
+        !Array.isArray(firstPage.data)
+    ) {
+
+        console.error(
+            "❌ Cấu trúc response không đúng:"
+        );
+
+        console.log(
+            firstResponse
+        );
+
+        return;
+    }
+
+    const totalPages =
+        Number(
+            firstPage.total_pages
+        ) || 1;
+
+    const totalElements =
+        Number(
+            firstPage.total_elements
+        ) || 0;
+
+    let allData =
+        [...firstPage.data];
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    console.log(
+        `👥 Tổng hồ sơ API báo: ${totalElements}`
+    );
+
+    console.log(
+        `📄 Tổng số trang: ${totalPages}`
+    );
+
+    console.log(
+        `📦 Trang 1: ${firstPage.data.length} hồ sơ`
+    );
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    // ============================================================
+    // 7. LẤY TOÀN BỘ CÁC TRANG
+    // ============================================================
+
+    const failedPages = [];
+
+    for (
+        let page = 2;
+        page <= totalPages;
+        page++
+    ) {
+
+        try {
+
+            const json =
+                await fetchPage(page);
+
+            const data =
+                Array.isArray(
+                    json?.data?.data
+                )
+                    ? json.data.data
+                    : [];
+
+            allData.push(
+                ...data
+            );
+
+            const percent =
+                (
+                    page /
+                    totalPages *
+                    100
+                ).toFixed(1);
+
+            console.log(
+                `✅ ${page}/${totalPages}` +
+                ` | ${percent}%` +
+                ` | +${data.length}` +
+                ` | Đã lấy: ${allData.length}`
+            );
+
+        } catch (error) {
+
+            failedPages.push(page);
+
+            console.error(
+                `❌ Không lấy được trang ${page}:`,
+                error.message
+            );
+        }
+
+        await sleep(
+            REQUEST_DELAY
+        );
+    }
+
+    // ============================================================
+    // 8. THỬ LẠI CÁC TRANG BỊ LỖI
+    // ============================================================
+
+    if (
+        failedPages.length
+    ) {
+
+        console.warn(
+            `⚠️ Có ${failedPages.length} trang lỗi. Đang thử lại...`
+        );
+
+        for (
+            const page of [...failedPages]
+        ) {
+
+            try {
+
+                await sleep(1500);
+
+                const json =
+                    await fetchPage(page);
+
+                const data =
+                    Array.isArray(
+                        json?.data?.data
+                    )
+                        ? json.data.data
+                        : [];
+
+                allData.push(
+                    ...data
+                );
+
+                const index =
+                    failedPages.indexOf(page);
+
+                if (
+                    index !== -1
+                ) {
+                    failedPages.splice(
+                        index,
+                        1
+                    );
+                }
+
+                console.log(
+                    `✅ Lấy lại trang ${page} thành công | +${data.length}`
+                );
+
+            } catch (error) {
+
+                console.error(
+                    `❌ Trang ${page} vẫn lỗi:`,
+                    error.message
+                );
+            }
+        }
+    }
+
+    // ============================================================
+    // 9. LOẠI TRÙNG
+    // ============================================================
+
+    const beforeDuplicate =
+        allData.length;
+
+    const uniqueMap =
+        new Map();
+
+    for (
+        const item of allData
+    ) {
+
+        const key =
+            item.check_up_id ??
+            (
+                `${item.patient_id || ""}_` +
+                `${item.ngay_kham || ""}_` +
+                `${item.id_number || ""}`
+            );
+
+        uniqueMap.set(
+            String(key),
+            item
+        );
+    }
+
+    allData =
+        Array.from(
+            uniqueMap.values()
+        );
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    console.log(
+        `📦 Trước loại trùng: ${beforeDuplicate}`
+    );
+
+    console.log(
+        `✅ Sau loại trùng: ${allData.length}`
+    );
+
+    if (
+        failedPages.length
+    ) {
+
+        console.warn(
+            "⚠️ Các trang chưa lấy được:",
+            failedPages
+        );
+    }
+
+    if (
+        totalElements &&
+        allData.length !== totalElements
+    ) {
+
+        console.warn(
+            `⚠️ API báo ${totalElements} hồ sơ nhưng hiện lấy được ${allData.length}.`
+        );
+
+        console.warn(
+            "Có thể dữ liệu trên server đã thay đổi trong lúc đang tải hoặc có trang request thất bại."
+        );
+
+    } else {
+
+        console.log(
+            "🎯 Số hồ sơ khớp với total_elements."
+        );
+    }
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    // ============================================================
+    // 10. CHUYỂN SANG DỮ LIỆU EXCEL
+    // ============================================================
+
+    const excelData =
+        allData.map(
+            (item, index) => ({
+
+                "STT":
+                    index + 1,
+
+                "Patient ID":
+                    item.patient_id ?? "",
+
+                "Check Up ID":
+                    item.check_up_id ?? "",
+
+                "Ngày khám":
+                    formatDateTime(
+                        item.ngay_kham
+                    ),
+
+                "Trạng thái":
+                    item.status ?? "",
+
+                "Loại":
+                    item.type ?? "",
+
+                "Lần khám":
+                    item.times ?? "",
+
+                "Họ và tên":
+                    item.full_name ?? "",
+
+                // Luôn giữ CCCD dưới dạng chuỗi
+                "CCCD":
+                    item.id_number != null
+                        ? String(
+                            item.id_number
+                        )
+                        : "",
+
+                "Ngày sinh":
+                    formatDate(
+                        item.date_of_birth
+                    ),
+
+                "Giới tính":
+                    item.gender === "male"
+                        ? "Nam"
+                        : item.gender === "female"
+                        ? "Nữ"
+                        : (
+                            item.gender ?? ""
+                        ),
+
+                "Địa chỉ":
+                    item.detail_address ?? ""
+
+            })
+        );
+
+    // ============================================================
+    // 11. TẠO SHEET
+    // ============================================================
+
+    const ws =
+        XLSX.utils.json_to_sheet(
+            excelData
+        );
+
+    // Chiều rộng các cột
+    ws["!cols"] = [
+        { wch: 8  }, // STT
+        { wch: 15 }, // Patient ID
+        { wch: 15 }, // Check Up ID
+        { wch: 20 }, // Ngày khám
+        { wch: 15 }, // Trạng thái
+        { wch: 12 }, // Loại
+        { wch: 10 }, // Lần khám
+        { wch: 30 }, // Họ tên
+        { wch: 20 }, // CCCD
+        { wch: 15 }, // Ngày sinh
+        { wch: 12 }, // Giới tính
+        { wch: 50 }  // Địa chỉ
+    ];
+
+    // ============================================================
+    // 12. ÉP CCCD THÀNH TEXT
+    // ============================================================
+
+    if (ws["!ref"]) {
+
+        const range =
+            XLSX.utils.decode_range(
+                ws["!ref"]
+            );
+
+        // CCCD = cột index 8
+        for (
+            let r = 1;
+            r <= range.e.r;
+            r++
+        ) {
+
+            const address =
+                XLSX.utils.encode_cell({
+                    r,
+                    c: 8
+                });
+
+            const cell =
+                ws[address];
+
+            if (cell) {
+                cell.t = "s";
+                cell.z = "@";
+            }
+        }
+    }
+
+    // ============================================================
+    // 13. FREEZE / FILTER
+    // ============================================================
+
+    ws["!autofilter"] = {
+        ref:
+            ws["!ref"]
+    };
+
+    // ============================================================
+    // 14. TẠO WORKBOOK
+    // ============================================================
+
+    const wb =
+        XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+        wb,
+        ws,
+        "Danh sách khám"
+    );
+
+    // ============================================================
+    // 15. TÊN FILE
+    // ============================================================
+
+    const now =
+        new Date();
+
+    const yyyy =
+        now.getFullYear();
+
+    const mm =
+        String(
+            now.getMonth() + 1
+        ).padStart(2, "0");
+
+    const dd =
+        String(
+            now.getDate()
+        ).padStart(2, "0");
+
+    const hh =
+        String(
+            now.getHours()
+        ).padStart(2, "0");
+
+    const min =
+        String(
+            now.getMinutes()
+        ).padStart(2, "0");
+
+    const fileName =
+        `PhieuKhamCsdlksk_${yyyy}-${mm}-${dd}_${hh}-${min}.xlsx`;
+
+    // ============================================================
+    // 16. XUẤT FILE
+    // ============================================================
+
+    XLSX.writeFile(
+        wb,
+        fileName
+    );
+
+    console.log(
+        "%c🎉 HOÀN TẤT",
+        "font-size:18px;font-weight:bold;color:#4caf50"
+    );
+
+    console.log(
+        `📁 File: ${fileName}`
+    );
+
+    console.log(
+        `👥 Tổng hồ sơ xuất: ${excelData.length}`
+    );
+
+    if (
+        failedPages.length
+    ) {
+
+        console.warn(
+            `⚠️ Chưa lấy được ${failedPages.length} trang:`,
+            failedPages
+        );
+
+    } else {
+
+        console.log(
+            "✅ Đã xử lý toàn bộ các trang API."
+        );
+    }
+
+})();
