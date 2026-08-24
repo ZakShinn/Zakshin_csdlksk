@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Hỗ trợ xuất Excel DS CSDL KSK
+// @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
 // @version      1.9.6
 // @description  Xuất toàn bộ danh sách khám sức khỏe từ csdlksk ra Excel
