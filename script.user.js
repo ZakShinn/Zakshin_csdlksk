@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.9.8
+// @version      1.9.9
 // @description  Xuất toàn bộ danh sách khám sức khỏe từ csdlksk ra Excel
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -49,6 +49,142 @@
         }
 
         return cleaned;
+    }
+
+    // Cắt field lớn (PDF base64) ngay trên chuỗi response trước JSON.parse
+    // để tránh OOM / timeout khi trang có hồ sơ completed.
+    function stripExcludedFieldsFromJsonText(text) {
+        if (!text || typeof text !== "string") {
+            return text;
+        }
+
+        let result = text;
+
+        for (const field of EXCLUDED_EXPORT_FIELDS) {
+            const key = `"${field}"`;
+            let output = "";
+            let i = 0;
+
+            while (true) {
+                const start =
+                    result.indexOf(key, i);
+
+                if (start === -1) {
+                    output +=
+                        result.slice(i);
+                    break;
+                }
+
+                let j =
+                    start + key.length;
+
+                while (
+                    j < result.length &&
+                    /\s/.test(result[j])
+                ) {
+                    j++;
+                }
+
+                if (result[j] !== ":") {
+                    output +=
+                        result.slice(
+                            i,
+                            start + key.length
+                        );
+                    i =
+                        start + key.length;
+                    continue;
+                }
+
+                j++;
+
+                while (
+                    j < result.length &&
+                    /\s/.test(result[j])
+                ) {
+                    j++;
+                }
+
+                if (result[j] !== '"') {
+                    // Không phải string → bỏ qua
+                    output +=
+                        result.slice(
+                            i,
+                            start + key.length
+                        );
+                    i =
+                        start + key.length;
+                    continue;
+                }
+
+                j++;
+
+                while (
+                    j < result.length &&
+                    result[j] !== '"'
+                ) {
+                    // Base64 thường không escape; vẫn bỏ qua \"
+                    if (
+                        result[j] === "\\" &&
+                        j + 1 < result.length
+                    ) {
+                        j += 2;
+                        continue;
+                    }
+
+                    j++;
+                }
+
+                if (j >= result.length) {
+                    output +=
+                        result.slice(i);
+                    break;
+                }
+
+                j++;
+
+                let removeStart = start;
+                let k = start - 1;
+
+                while (
+                    k >= i &&
+                    /\s/.test(result[k])
+                ) {
+                    k--;
+                }
+
+                if (
+                    k >= i &&
+                    result[k] === ","
+                ) {
+                    removeStart = k;
+                } else {
+                    let m = j;
+
+                    while (
+                        m < result.length &&
+                        /\s/.test(result[m])
+                    ) {
+                        m++;
+                    }
+
+                    if (result[m] === ",") {
+                        j = m + 1;
+                    }
+                }
+
+                output +=
+                    result.slice(
+                        i,
+                        removeStart
+                    );
+                i = j;
+            }
+
+            result = output;
+        }
+
+        return result;
     }
 
     // ============================================================
@@ -475,7 +611,8 @@
 
                     url,
 
-                    timeout: 30000,
+                    // Trang có base64_ca rất lớn cần timeout dài hơn
+                    timeout: 90000,
 
                     headers: {
                         Accept: "application/json",
@@ -497,13 +634,17 @@
             let json;
 
             try {
-                json =
-                    JSON.parse(
+                const rawText =
+                    stripExcludedFieldsFromJsonText(
                         response.responseText
                     );
-            } catch {
+
+                json =
+                    JSON.parse(rawText);
+            } catch (parseError) {
                 throw new Error(
-                    "Response không phải JSON"
+                    "Response không phải JSON / quá lớn: " +
+                    (parseError?.message || "")
                 );
             }
 
@@ -516,13 +657,26 @@
                 );
             }
 
+            // Phòng hờ nếu field vẫn còn sau khi parse
+            if (
+                Array.isArray(
+                    json?.data?.data
+                )
+            ) {
+                json.data.data =
+                    json.data.data.map(
+                        sanitizeExaminationRow
+                    );
+            }
+
             return json;
 
         } catch (error) {
             if (retry < MAX_RETRY) {
                 console.warn(
                     `[KSK Export] Trang ${page} lỗi. ` +
-                    `Retry ${retry + 1}/${MAX_RETRY}`
+                    `Retry ${retry + 1}/${MAX_RETRY}: ` +
+                    `${error?.message || error}`
                 );
 
                 await sleep(
