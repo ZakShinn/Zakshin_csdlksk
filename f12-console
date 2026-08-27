@@ -34,6 +34,140 @@
         return cleaned;
     }
 
+    // Cắt field lớn (PDF base64) ngay trên chuỗi response trước JSON.parse
+    // để tránh OOM / timeout khi trang có hồ sơ completed.
+    function stripExcludedFieldsFromJsonText(text) {
+        if (!text || typeof text !== "string") {
+            return text;
+        }
+
+        let result = text;
+
+        for (const field of EXCLUDED_EXPORT_FIELDS) {
+            const key = `"${field}"`;
+            let output = "";
+            let i = 0;
+
+            while (true) {
+                const start =
+                    result.indexOf(key, i);
+
+                if (start === -1) {
+                    output +=
+                        result.slice(i);
+                    break;
+                }
+
+                let j =
+                    start + key.length;
+
+                while (
+                    j < result.length &&
+                    /\s/.test(result[j])
+                ) {
+                    j++;
+                }
+
+                if (result[j] !== ":") {
+                    output +=
+                        result.slice(
+                            i,
+                            start + key.length
+                        );
+                    i =
+                        start + key.length;
+                    continue;
+                }
+
+                j++;
+
+                while (
+                    j < result.length &&
+                    /\s/.test(result[j])
+                ) {
+                    j++;
+                }
+
+                if (result[j] !== '"') {
+                    output +=
+                        result.slice(
+                            i,
+                            start + key.length
+                        );
+                    i =
+                        start + key.length;
+                    continue;
+                }
+
+                j++;
+
+                while (
+                    j < result.length &&
+                    result[j] !== '"'
+                ) {
+                    if (
+                        result[j] === "\\" &&
+                        j + 1 < result.length
+                    ) {
+                        j += 2;
+                        continue;
+                    }
+
+                    j++;
+                }
+
+                if (j >= result.length) {
+                    output +=
+                        result.slice(i);
+                    break;
+                }
+
+                j++;
+
+                let removeStart = start;
+                let k = start - 1;
+
+                while (
+                    k >= i &&
+                    /\s/.test(result[k])
+                ) {
+                    k--;
+                }
+
+                if (
+                    k >= i &&
+                    result[k] === ","
+                ) {
+                    removeStart = k;
+                } else {
+                    let m = j;
+
+                    while (
+                        m < result.length &&
+                        /\s/.test(result[m])
+                    ) {
+                        m++;
+                    }
+
+                    if (result[m] === ",") {
+                        j = m + 1;
+                    }
+                }
+
+                output +=
+                    result.slice(
+                        i,
+                        removeStart
+                    );
+                i = j;
+            }
+
+            result = output;
+        }
+
+        return result;
+    }
+
     console.clear();
 
     console.log(
@@ -499,8 +633,17 @@
                 );
             }
 
+            // Đọc text → cắt base64_ca trước khi parse
+            // (tránh OOM khi trang có hồ sơ completed)
+            const rawText =
+                await response.text();
+
             const json =
-                await response.json();
+                JSON.parse(
+                    stripExcludedFieldsFromJsonText(
+                        rawText
+                    )
+                );
 
             if (
                 json?.header?.success === false
@@ -512,6 +655,17 @@
                 );
             }
 
+            if (
+                Array.isArray(
+                    json?.data?.data
+                )
+            ) {
+                json.data.data =
+                    json.data.data.map(
+                        sanitizeExaminationRow
+                    );
+            }
+
             return json;
 
         } catch (error) {
@@ -521,7 +675,7 @@
             ) {
 
                 console.warn(
-                    `⚠️ Trang ${page} lỗi - thử lại ${retry + 1}/${MAX_RETRY}`
+                    `⚠️ Trang ${page} lỗi - thử lại ${retry + 1}/${MAX_RETRY}: ${error?.message || error}`
                 );
 
                 console.warn(

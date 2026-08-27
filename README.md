@@ -172,7 +172,7 @@ Kiểm tra:
 
 ```text
 1. Violentmonkey đã được bật.
-2. Script đã được Enable (phiên bản ≥ 1.9.8, @match = https://admin.csdlksk.vn/*).
+2. Script đã được Enable (phiên bản ≥ 1.9.9, @match = https://admin.csdlksk.vn/*).
 3. Đang ở trang Health Checkup (pathname chứa /admin/operation/health-checkup).
 4. Nếu vừa cập nhật script: tắt/bật lại script hoặc reload bằng Ctrl + F5.
 ```
