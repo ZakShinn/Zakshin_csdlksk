@@ -1,0 +1,289 @@
+(async () => {
+  const API =
+    "https://api.emrhub.vn/api/checkup/health-examinations";
+
+  const PAGE_SIZE = 100;
+  const DELETE_CONCURRENCY = 3;
+  const DELETE_DELAY = 300;
+
+  const sleep = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  /* Tìm Bearer token */
+
+  function findJwtToken() {
+    for (const storage of [localStorage, sessionStorage]) {
+      for (let i = 0; i < storage.length; i++) {
+        const value =
+          storage.getItem(storage.key(i)) || "";
+
+        const match = value.match(
+          /eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/
+        );
+
+        if (match) {
+          return match[0];
+        }
+      }
+    }
+
+    return null;
+  }
+
+  let token = findJwtToken();
+
+  if (!token) {
+    token = prompt(
+      "Không tìm thấy token. Hãy dán Authorization token:"
+    );
+
+    if (!token) {
+      throw new Error("Không có Bearer token.");
+    }
+
+    token = token
+      .trim()
+      .replace(/^Bearer\s+/i, "");
+  }
+
+  const headers = {
+    accept: "application/json, text/plain, */*",
+    authorization: `Bearer ${token}`
+  };
+
+  /* Lấy một trang hồ sơ */
+
+  async function getPage(pageNumber) {
+    const url =
+      `${API}?page_number=${pageNumber}` +
+      `&page_size=${PAGE_SIZE}`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers
+    });
+
+    const text = await response.text();
+
+    let json;
+
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `API không trả JSON. HTTP ${response.status}`
+      );
+    }
+
+    if (response.status === 401) {
+      throw new Error(
+        "Token không hợp lệ hoặc đã hết hạn."
+      );
+    }
+
+    if (response.status === 403) {
+      throw new Error(
+        "Tài khoản không có quyền truy cập."
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `API trả về HTTP ${response.status}.`
+      );
+    }
+
+    if (json?.header?.success !== true) {
+      throw new Error(
+        json?.header?.res_msg ||
+        "API trả về trạng thái không thành công."
+      );
+    }
+
+    if (!Array.isArray(json?.data?.data)) {
+      console.error("Response API:", json);
+
+      throw new Error(
+        "Không tìm thấy danh sách tại response.data.data."
+      );
+    }
+
+    return json;
+  }
+
+  /* Lấy toàn bộ hồ sơ */
+
+  console.log("Đang lấy danh sách hồ sơ...");
+
+  const firstResponse = await getPage(0);
+
+  const totalPages =
+    Number(firstResponse?.data?.total_pages) || 1;
+
+  const allRecords = [
+    ...firstResponse.data.data
+  ];
+
+  for (
+    let pageNumber = 1;
+    pageNumber < totalPages;
+    pageNumber++
+  ) {
+    const pageResponse =
+      await getPage(pageNumber);
+
+    allRecords.push(
+      ...pageResponse.data.data
+    );
+
+    console.log(
+      `Đã lấy trang ${pageNumber + 1}/${totalPages}`
+    );
+
+    await sleep(200);
+  }
+
+  /* Lọc Check Up ID hợp lệ và loại trùng */
+
+  const records = [];
+  const seenIds = new Set();
+
+  for (const record of allRecords) {
+    const checkUpId = record?.check_up_id;
+
+    if (
+      checkUpId === undefined ||
+      checkUpId === null ||
+      String(checkUpId).trim() === ""
+    ) {
+      continue;
+    }
+
+    const normalizedId = String(checkUpId);
+
+    if (!seenIds.has(normalizedId)) {
+      seenIds.add(normalizedId);
+      records.push(record);
+    }
+  }
+
+  if (records.length === 0) {
+    alert("Không có hồ sơ nào để xóa.");
+    return;
+  }
+
+  console.table(
+    records.map((record) => ({
+      check_up_id: record.check_up_id,
+      full_name: record.full_name,
+      id_number: record.id_number,
+      ngay_kham: record.ngay_kham
+    }))
+  );
+
+  /* Chỉ hỏi Có/Không bằng OK/Cancel */
+
+  const confirmed = confirm(
+    `Xác nhận xóa toàn bộ ${records.length} hồ sơ?`
+  );
+
+  if (!confirmed) {
+    console.log("Đã chọn không. Không có dữ liệu bị xóa.");
+    return;
+  }
+
+  /* Xóa theo check_up_id */
+
+  let cursor = 0;
+  let completed = 0;
+  let success = 0;
+  let failed = 0;
+
+async function deleteWorker() {
+  while (true) {
+    const index = cursor++;
+
+    if (index >= records.length) {
+      return;
+    }
+
+    const record = records[index];
+    const checkUpId = record.check_up_id;
+    const fullName = record.full_name || "Không có";
+
+    try {
+      const response = await fetch(
+        `${API}/${encodeURIComponent(checkUpId)}`,
+        {
+          method: "DELETE",
+          headers
+        }
+      );
+
+      const text = await response.text();
+
+      let data;
+
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
+
+      if (
+        !response.ok ||
+        data?.header?.success !== true
+      ) {
+        throw new Error(
+          typeof data === "string"
+            ? data
+            : JSON.stringify(data)
+        );
+      }
+
+      success++;
+      completed++;
+
+      console.log(
+        `✅ Đã xóa hồ sơ ${completed}/${records.length}` +
+        ` | Check Up ID: ${checkUpId}` +
+        ` | Họ tên: ${fullName}` +
+        ` | Thất bại: ${failed}`
+      );
+    } catch (error) {
+      failed++;
+      completed++;
+
+      console.error(
+        `❌ Xóa thất bại ${completed}/${records.length}` +
+        ` | Check Up ID: ${checkUpId}` +
+        ` | Họ tên: ${fullName}` +
+        ` | Thất bại: ${failed}` +
+        ` | Lỗi: ${error.message}`
+      );
+    }
+
+    await sleep(DELETE_DELAY);
+  }
+}
+
+  await Promise.all(
+    Array.from(
+      { length: DELETE_CONCURRENCY },
+      () => deleteWorker()
+    )
+  );
+
+  alert(
+    "Đã hoàn tất.\n\n" +
+    `Thành công: ${success}\n` +
+    `Thất bại: ${failed}`
+  );
+})().catch((error) => {
+  console.error("SCRIPT DỪNG DO LỖI:", error);
+
+  alert(
+    "SCRIPT DỪNG DO LỖI\n\n" +
+    error.message
+  );
+});
