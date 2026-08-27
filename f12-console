@@ -3,8 +3,19 @@
     // EMRHUB - XUẤT TOÀN BỘ HEALTH EXAMINATIONS RA EXCEL
     // ============================================================
 
-    const API_URL =
-        "https://api.emrhub.vn/api/checkup/health-examinations";
+    // Hai nguồn API: Nhập liệu + Liên thông (/click)
+    const API_SOURCES = [
+        {
+            label: "Nhập liệu",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations"
+        },
+        {
+            label: "Liên thông",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations/click"
+        }
+    ];
 
     // Nếu API không cho page_size=100, đổi thành 50 hoặc 10.
     const PAGE_SIZE = 100;
@@ -584,11 +595,12 @@
 
     async function fetchPage(
         page,
+        apiUrl,
         retry = 0
     ) {
 
         const url =
-            `${API_URL}?page_number=${page}&page_size=${PAGE_SIZE}`;
+            `${apiUrl}?page_number=${page}&page_size=${PAGE_SIZE}`;
 
         try {
 
@@ -688,12 +700,214 @@
 
                 return fetchPage(
                     page,
+                    apiUrl,
                     retry + 1
                 );
             }
 
             throw error;
         }
+    }
+
+    function tagRowsWithSource(
+        rows,
+        sourceLabel
+    ) {
+        return rows.map(item => ({
+            ...sanitizeExaminationRow(
+                item
+            ),
+            _nguon: sourceLabel
+        }));
+    }
+
+    async function fetchAllFromSource(
+        source
+    ) {
+        console.log(
+            `📥 [${source.label}] Đang lấy trang đầu tiên...`
+        );
+
+        const firstResponse =
+            await fetchPage(
+                1,
+                source.url
+            );
+
+        const firstPage =
+            firstResponse?.data;
+
+        if (
+            !firstPage ||
+            !Array.isArray(
+                firstPage.data
+            )
+        ) {
+            throw new Error(
+                `[${source.label}] Cấu trúc response không đúng`
+            );
+        }
+
+        const totalPages =
+            Number(
+                firstPage.total_pages
+            ) || 1;
+
+        const totalElements =
+            Number(
+                firstPage.total_elements
+            ) || 0;
+
+        let rows =
+            tagRowsWithSource(
+                firstPage.data,
+                source.label
+            );
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+
+        console.log(
+            `👥 [${source.label}] Tổng hồ sơ API báo: ${totalElements}`
+        );
+
+        console.log(
+            `📄 [${source.label}] Tổng số trang: ${totalPages}`
+        );
+
+        console.log(
+            `📦 [${source.label}] Trang 1: ${firstPage.data.length} hồ sơ`
+        );
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+
+        const failedPages = [];
+
+        for (
+            let page = 2;
+            page <= totalPages;
+            page++
+        ) {
+
+            try {
+
+                const json =
+                    await fetchPage(
+                        page,
+                        source.url
+                    );
+
+                const data =
+                    Array.isArray(
+                        json?.data?.data
+                    )
+                        ? tagRowsWithSource(
+                            json.data.data,
+                            source.label
+                        )
+                        : [];
+
+                rows.push(...data);
+
+                const percent =
+                    (
+                        page /
+                        totalPages *
+                        100
+                    ).toFixed(1);
+
+                console.log(
+                    `✅ [${source.label}] ${page}/${totalPages}` +
+                    ` | ${percent}%` +
+                    ` | +${data.length}` +
+                    ` | Đã lấy: ${rows.length}`
+                );
+
+            } catch (error) {
+
+                failedPages.push(page);
+
+                console.error(
+                    `❌ [${source.label}] Không lấy được trang ${page}:`,
+                    error.message
+                );
+            }
+
+            await sleep(
+                REQUEST_DELAY
+            );
+        }
+
+        if (failedPages.length) {
+
+            console.warn(
+                `⚠️ [${source.label}] Có ${failedPages.length} trang lỗi. Đang thử lại...`
+            );
+
+            for (
+                const page of [
+                    ...failedPages
+                ]
+            ) {
+
+                try {
+
+                    await sleep(1500);
+
+                    const json =
+                        await fetchPage(
+                            page,
+                            source.url
+                        );
+
+                    const data =
+                        Array.isArray(
+                            json?.data?.data
+                        )
+                            ? tagRowsWithSource(
+                                json.data.data,
+                                source.label
+                            )
+                            : [];
+
+                    rows.push(...data);
+
+                    const idx =
+                        failedPages.indexOf(
+                            page
+                        );
+
+                    if (idx !== -1) {
+                        failedPages.splice(
+                            idx,
+                            1
+                        );
+                    }
+
+                    console.log(
+                        `✅ [${source.label}] Lấy lại trang ${page} thành công | +${data.length}`
+                    );
+
+                } catch (error) {
+
+                    console.error(
+                        `❌ [${source.label}] Trang ${page} vẫn lỗi:`,
+                        error.message
+                    );
+                }
+            }
+        }
+
+        return {
+            label: source.label,
+            rows,
+            totalElements,
+            totalPages,
+            failedPages
+        };
     }
 
     // ============================================================
@@ -763,218 +977,67 @@
     }
 
     // ============================================================
-    // 6. LẤY TRANG ĐẦU
+    // 6. LẤY DỮ LIỆU TỪ CẢ HAI NGUỒN
     // ============================================================
 
-    console.log(
-        "📥 Đang lấy trang đầu tiên..."
-    );
+    let allData = [];
+    let totalElementsExpected = 0;
+    const allFailedPages = [];
 
-    let firstResponse;
-
-    try {
-
-        firstResponse =
-            await fetchPage(1);
-
-    } catch (error) {
-
-        console.error(
-            "❌ Không gọi được API."
-        );
-
-        console.error(
-            error
-        );
-
-        if (
-            String(error).includes("401")
-        ) {
-            console.error(
-                "🔐 Token không đúng hoặc đã hết hạn."
-            );
-        }
-
-        return;
-    }
-
-    const firstPage =
-        firstResponse?.data;
-
-    if (
-        !firstPage ||
-        !Array.isArray(firstPage.data)
-    ) {
-
-        console.error(
-            "❌ Cấu trúc response không đúng:"
-        );
-
-        console.log(
-            firstResponse
-        );
-
-        return;
-    }
-
-    const totalPages =
-        Number(
-            firstPage.total_pages
-        ) || 1;
-
-    const totalElements =
-        Number(
-            firstPage.total_elements
-        ) || 0;
-
-    let allData =
-        firstPage.data.map(
-            sanitizeExaminationRow
-        );
-
-    console.log(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    );
-
-    console.log(
-        `👥 Tổng hồ sơ API báo: ${totalElements}`
-    );
-
-    console.log(
-        `📄 Tổng số trang: ${totalPages}`
-    );
-
-    console.log(
-        `📦 Trang 1: ${firstPage.data.length} hồ sơ`
-    );
-
-    console.log(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    );
-
-    // ============================================================
-    // 7. LẤY TOÀN BỘ CÁC TRANG
-    // ============================================================
-
-    const failedPages = [];
-
-    for (
-        let page = 2;
-        page <= totalPages;
-        page++
-    ) {
+    for (const source of API_SOURCES) {
 
         try {
 
-            const json =
-                await fetchPage(page);
-
-            const data =
-                Array.isArray(
-                    json?.data?.data
-                )
-                    ? json.data.data.map(
-                        sanitizeExaminationRow
-                    )
-                    : [];
+            const result =
+                await fetchAllFromSource(
+                    source
+                );
 
             allData.push(
-                ...data
+                ...result.rows
             );
 
-            const percent =
-                (
-                    page /
-                    totalPages *
-                    100
-                ).toFixed(1);
+            totalElementsExpected +=
+                result.totalElements;
+
+            for (
+                const page of result.failedPages
+            ) {
+                allFailedPages.push(
+                    `${source.label} #${page}`
+                );
+            }
 
             console.log(
-                `✅ ${page}/${totalPages}` +
-                ` | ${percent}%` +
-                ` | +${data.length}` +
-                ` | Đã lấy: ${allData.length}`
+                `✅ [${source.label}] Hoàn tất: ${result.rows.length} hồ sơ`
             );
 
         } catch (error) {
 
-            failedPages.push(page);
+            console.error(
+                `❌ Không gọi được API [${source.label}].`
+            );
 
             console.error(
-                `❌ Không lấy được trang ${page}:`,
-                error.message
+                error
             );
-        }
 
-        await sleep(
-            REQUEST_DELAY
-        );
-    }
-
-    // ============================================================
-    // 8. THỬ LẠI CÁC TRANG BỊ LỖI
-    // ============================================================
-
-    if (
-        failedPages.length
-    ) {
-
-        console.warn(
-            `⚠️ Có ${failedPages.length} trang lỗi. Đang thử lại...`
-        );
-
-        for (
-            const page of [...failedPages]
-        ) {
-
-            try {
-
-                await sleep(1500);
-
-                const json =
-                    await fetchPage(page);
-
-                const data =
-                    Array.isArray(
-                        json?.data?.data
-                    )
-                        ? json.data.data.map(
-                            sanitizeExaminationRow
-                        )
-                        : [];
-
-                allData.push(
-                    ...data
-                );
-
-                const index =
-                    failedPages.indexOf(page);
-
-                if (
-                    index !== -1
-                ) {
-                    failedPages.splice(
-                        index,
-                        1
-                    );
-                }
-
-                console.log(
-                    `✅ Lấy lại trang ${page} thành công | +${data.length}`
-                );
-
-            } catch (error) {
-
+            if (
+                String(error).includes(
+                    "401"
+                )
+            ) {
                 console.error(
-                    `❌ Trang ${page} vẫn lỗi:`,
-                    error.message
+                    "🔐 Token không đúng hoặc đã hết hạn."
                 );
             }
+
+            return;
         }
     }
 
     // ============================================================
-    // 9. LOẠI TRÙNG
+    // 7. LOẠI TRÙNG (trong cùng nguồn)
     // ============================================================
 
     const beforeDuplicate =
@@ -987,13 +1050,17 @@
         const item of allData
     ) {
 
-        const key =
+        const baseKey =
             item.check_up_id ??
             (
                 `${item.patient_id || ""}_` +
                 `${item.ngay_kham || ""}_` +
                 `${item.id_number || ""}`
             );
+
+        // Giữ cả hai nguồn nếu cùng hồ sơ xuất hiện ở cả hai API
+        const key =
+            `${item._nguon || ""}|${baseKey}`;
 
         uniqueMap.set(
             String(key),
@@ -1018,23 +1085,28 @@
         `✅ Sau loại trùng: ${allData.length}`
     );
 
+    console.log(
+        `📊 API báo tổng (cả 2 nguồn): ${totalElementsExpected}`
+    );
+
     if (
-        failedPages.length
+        allFailedPages.length
     ) {
 
         console.warn(
             "⚠️ Các trang chưa lấy được:",
-            failedPages
+            allFailedPages
         );
     }
 
     if (
-        totalElements &&
-        allData.length !== totalElements
+        totalElementsExpected &&
+        allData.length !==
+            totalElementsExpected
     ) {
 
         console.warn(
-            `⚠️ API báo ${totalElements} hồ sơ nhưng hiện lấy được ${allData.length}.`
+            `⚠️ API báo ${totalElementsExpected} hồ sơ nhưng hiện lấy được ${allData.length}.`
         );
 
         console.warn(
@@ -1044,7 +1116,7 @@
     } else {
 
         console.log(
-            "🎯 Số hồ sơ khớp với total_elements."
+            "🎯 Số hồ sơ khớp với tổng total_elements của cả 2 nguồn."
         );
     }
 
@@ -1053,7 +1125,7 @@
     );
 
     // ============================================================
-    // 10. CHUYỂN SANG DỮ LIỆU EXCEL
+    // 8. CHUYỂN SANG DỮ LIỆU EXCEL
     // ============================================================
 
     const excelData =
@@ -1109,13 +1181,16 @@
                         ),
 
                 "Địa chỉ":
-                    item.detail_address ?? ""
+                    item.detail_address ?? "",
+
+                "Nguồn":
+                    item._nguon ?? ""
 
             })
         );
 
     // ============================================================
-    // 11. TẠO SHEET
+    // 9. TẠO SHEET
     // ============================================================
 
     const ws =
@@ -1136,11 +1211,12 @@
         { wch: 20 }, // CCCD
         { wch: 15 }, // Ngày sinh
         { wch: 12 }, // Giới tính
-        { wch: 50 }  // Địa chỉ
+        { wch: 50 }, // Địa chỉ
+        { wch: 12 }  // Nguồn
     ];
 
     // ============================================================
-    // 12. ÉP CCCD THÀNH TEXT
+    // 10. ÉP CCCD THÀNH TEXT
     // ============================================================
 
     if (ws["!ref"]) {
@@ -1174,7 +1250,7 @@
     }
 
     // ============================================================
-    // 13. FREEZE / FILTER
+    // 11. FREEZE / FILTER
     // ============================================================
 
     ws["!autofilter"] = {
@@ -1183,7 +1259,7 @@
     };
 
     // ============================================================
-    // 14. TẠO WORKBOOK
+    // 12. TẠO WORKBOOK
     // ============================================================
 
     const wb =
@@ -1196,7 +1272,7 @@
     );
 
     // ============================================================
-    // 15. TÊN FILE
+    // 13. TÊN FILE
     // ============================================================
 
     const now =
@@ -1229,7 +1305,7 @@
         `PhieuKhamCsdlksk_${yyyy}-${mm}-${dd}_${hh}-${min}.xlsx`;
 
     // ============================================================
-    // 16. XUẤT FILE
+    // 14. XUẤT FILE
     // ============================================================
 
     XLSX.writeFile(

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.9.9
+// @version      1.10.2
 // @description  Xuất toàn bộ danh sách khám sức khỏe từ csdlksk ra Excel
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -18,8 +18,19 @@
     // CẤU HÌNH
     // ============================================================
 
-    const API_URL =
-        "https://api.emrhub.vn/api/checkup/health-examinations";
+    // Hai nguồn API: Nhập liệu + Liên thông (/click)
+    const API_SOURCES = [
+        {
+            label: "Nhập liệu",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations"
+        },
+        {
+            label: "Liên thông",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations/click"
+        }
+    ];
 
     const PAGE_SIZE = 100;
 
@@ -597,10 +608,11 @@
     async function fetchPage(
         page,
         token,
+        apiUrl,
         retry = 0
     ) {
         const url =
-            `${API_URL}` +
+            `${apiUrl}` +
             `?page_number=${page}` +
             `&page_size=${PAGE_SIZE}`;
 
@@ -686,6 +698,7 @@
                 return fetchPage(
                     page,
                     token,
+                    apiUrl,
                     retry + 1
                 );
             }
@@ -881,6 +894,7 @@
     async function fetchPagesConcurrent(
         pageNumbers,
         token,
+        apiUrl,
         onPageDone
     ) {
         const results = [];
@@ -906,7 +920,8 @@
                     const data =
                         await fetchPage(
                             page,
-                            token
+                            token,
+                            apiUrl
                         );
 
                     results.push({
@@ -945,6 +960,154 @@
         await Promise.all(workers);
 
         return results;
+    }
+
+    function tagRowsWithSource(
+        rows,
+        sourceLabel
+    ) {
+        return rows.map(item => ({
+            ...sanitizeExaminationRow(
+                item
+            ),
+            _nguon: sourceLabel
+        }));
+    }
+
+    async function fetchAllFromSource(
+        source,
+        token,
+        onProgress
+    ) {
+        const first =
+            await fetchPage(
+                1,
+                token,
+                source.url
+            );
+
+        const firstData =
+            first?.data;
+
+        if (
+            !firstData ||
+            !Array.isArray(
+                firstData.data
+            )
+        ) {
+            throw new Error(
+                `Response API [${source.label}] không đúng cấu trúc.`
+            );
+        }
+
+        const totalPages =
+            Number(
+                firstData.total_pages
+            ) || 1;
+
+        const totalElements =
+            Number(
+                firstData.total_elements
+            ) || 0;
+
+        let rows =
+            tagRowsWithSource(
+                firstData.data,
+                source.label
+            );
+
+        console.log(
+            `[KSK Export] [${source.label}] ` +
+            `Tổng hồ sơ: ${totalElements}, ` +
+            `trang: ${totalPages}`
+        );
+
+        onProgress?.(
+            1,
+            totalPages,
+            source.label
+        );
+
+        if (totalPages > 1) {
+            const pages = [];
+
+            for (
+                let page = 2;
+                page <= totalPages;
+                page++
+            ) {
+                pages.push(page);
+            }
+
+            let completed = 1;
+
+            const results =
+                await fetchPagesConcurrent(
+                    pages,
+                    token,
+                    source.url,
+                    () => {
+                        completed++;
+
+                        onProgress?.(
+                            completed,
+                            totalPages,
+                            source.label
+                        );
+                    }
+                );
+
+            const failed = [];
+
+            results
+                .sort(
+                    (a, b) =>
+                        a.page - b.page
+                )
+                .forEach(result => {
+                    if (
+                        result.success
+                    ) {
+                        const pageRows =
+                            result
+                                .data
+                                ?.data
+                                ?.data;
+
+                        if (
+                            Array.isArray(
+                                pageRows
+                            )
+                        ) {
+                            rows.push(
+                                ...tagRowsWithSource(
+                                    pageRows,
+                                    source.label
+                                )
+                            );
+                        }
+
+                    } else {
+                        failed.push(
+                            result.page
+                        );
+                    }
+                });
+
+            if (failed.length) {
+                throw new Error(
+                    `[${source.label}] Không tải được trang: ` +
+                    failed.join(", ")
+                );
+            }
+        }
+
+        return {
+            label: source.label,
+            rows,
+            totalElements,
+            totalPages
+        };
     }
 
     // ============================================================
@@ -995,145 +1158,85 @@
             );
 
             // ----------------------------------------------------
-            // PAGE 1
+            // TẢI CẢ HAI NGUỒN: Nhập liệu + Liên thông
             // ----------------------------------------------------
 
-            setProgress(
-                5,
-                "📥 Đang đọc thông tin dữ liệu..."
-            );
+            let allData = [];
+            let totalElementsExpected = 0;
 
-            const first =
-                await fetchPage(
-                    1,
-                    token
-                );
+            const sourceCount =
+                API_SOURCES.length;
 
-            const firstData =
-                first?.data;
-
-            if (
-                !firstData ||
-                !Array.isArray(
-                    firstData.data
-                )
+            for (
+                let sourceIndex = 0;
+                sourceIndex < sourceCount;
+                sourceIndex++
             ) {
-                throw new Error(
-                    "Response API không đúng cấu trúc."
+                const source =
+                    API_SOURCES[
+                        sourceIndex
+                    ];
+
+                const progressBase =
+                    5 +
+                    (
+                        sourceIndex /
+                        sourceCount
+                    ) *
+                    85;
+
+                const progressSpan =
+                    85 / sourceCount;
+
+                setProgress(
+                    Math.round(
+                        progressBase
+                    ),
+                    `📥 Đang tải [${source.label}]...`
                 );
-            }
 
-            const totalPages =
-                Number(
-                    firstData.total_pages
-                ) || 1;
-
-            const totalElements =
-                Number(
-                    firstData.total_elements
-                ) || 0;
-
-            let allData =
-                firstData.data.map(
-                    sanitizeExaminationRow
-                );
-
-            console.log(
-                `[KSK Export] Tổng hồ sơ: ${totalElements}`
-            );
-
-            console.log(
-                `[KSK Export] Tổng trang: ${totalPages}`
-            );
-
-            // ----------------------------------------------------
-            // PAGE 2 -> END
-            // ----------------------------------------------------
-
-            if (totalPages > 1) {
-                const pages =
-                    [];
-
-                for (
-                    let page = 2;
-                    page <= totalPages;
-                    page++
-                ) {
-                    pages.push(page);
-                }
-
-                let completed = 1;
-
-                const results =
-                    await fetchPagesConcurrent(
-                        pages,
+                const result =
+                    await fetchAllFromSource(
+                        source,
                         token,
-                        () => {
-                            completed++;
-
+                        (
+                            completed,
+                            totalPages,
+                            label
+                        ) => {
                             const percent =
                                 Math.round(
+                                    progressBase +
                                     (
                                         completed /
                                         totalPages
                                     ) *
-                                    85
+                                    progressSpan
                                 );
 
                             setProgress(
                                 percent,
-                                `📥 Đang tải dữ liệu...<br>` +
+                                `📥 [${label}] Đang tải...<br>` +
                                 `${completed}/${totalPages} trang`
                             );
                         }
                     );
 
-                const failed =
-                    [];
+                allData.push(
+                    ...result.rows
+                );
 
-                results
-                    .sort(
-                        (a, b) =>
-                            a.page - b.page
-                    )
-                    .forEach(result => {
-                        if (
-                            result.success
-                        ) {
-                            const rows =
-                                result
-                                    .data
-                                    ?.data
-                                    ?.data;
+                totalElementsExpected +=
+                    result.totalElements;
 
-                            if (
-                                Array.isArray(
-                                    rows
-                                )
-                            ) {
-                                allData.push(
-                                    ...rows.map(
-                                        sanitizeExaminationRow
-                                    )
-                                );
-                            }
-
-                        } else {
-                            failed.push(
-                                result.page
-                            );
-                        }
-                    });
-
-                if (failed.length) {
-                    throw new Error(
-                        `Không tải được trang: ${failed.join(", ")}`
-                    );
-                }
+                console.log(
+                    `[KSK Export] [${result.label}] ` +
+                    `Đã lấy ${result.rows.length} hồ sơ`
+                );
             }
 
             // ----------------------------------------------------
-            // LOẠI TRÙNG
+            // LOẠI TRÙNG (trong cùng nguồn)
             // ----------------------------------------------------
 
             setProgress(
@@ -1145,13 +1248,17 @@
                 new Map();
 
             for (const item of allData) {
-                const key =
+                const baseKey =
                     item.check_up_id ??
                     (
                         `${item.patient_id ?? ""}_` +
                         `${item.ngay_kham ?? ""}_` +
                         `${item.id_number ?? ""}`
                     );
+
+                // Giữ cả hai nguồn nếu cùng hồ sơ xuất hiện ở cả hai API
+                const key =
+                    `${item._nguon || ""}|${baseKey}`;
 
                 unique.set(
                     String(key),
@@ -1217,7 +1324,10 @@
                                     ),
 
                         "Địa chỉ":
-                            item.detail_address ?? ""
+                            item.detail_address ?? "",
+
+                        "Nguồn":
+                            item._nguon ?? ""
                     })
                 );
 
@@ -1247,7 +1357,8 @@
                 { wch: 20 },
                 { wch: 15 },
                 { wch: 12 },
-                { wch: 50 }
+                { wch: 50 },
+                { wch: 12 }
             ];
 
             // Auto filter
@@ -1351,12 +1462,12 @@
             );
 
             if (
-                totalElements &&
+                totalElementsExpected &&
                 excelRows.length !==
-                    totalElements
+                    totalElementsExpected
             ) {
                 console.warn(
-                    `[KSK Export] API báo ${totalElements} hồ sơ, ` +
+                    `[KSK Export] API báo ${totalElementsExpected} hồ sơ (cả 2 nguồn), ` +
                     `file có ${excelRows.length} hồ sơ.`
                 );
             }
