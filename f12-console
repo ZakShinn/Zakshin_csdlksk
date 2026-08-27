@@ -15,6 +15,25 @@
     // Số lần thử lại nếu một trang bị lỗi
     const MAX_RETRY = 3;
 
+    // Field API không dùng khi xuất Excel (vd. PDF base64 rất lớn)
+    const EXCLUDED_EXPORT_FIELDS = [
+        "base64_ca"
+    ];
+
+    function sanitizeExaminationRow(item) {
+        if (!item || typeof item !== "object") {
+            return item;
+        }
+
+        const cleaned = { ...item };
+
+        for (const field of EXCLUDED_EXPORT_FIELDS) {
+            delete cleaned[field];
+        }
+
+        return cleaned;
+    }
+
     console.clear();
 
     console.log(
@@ -655,7 +674,9 @@
         ) || 0;
 
     let allData =
-        [...firstPage.data];
+        firstPage.data.map(
+            sanitizeExaminationRow
+        );
 
     console.log(
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -698,7 +719,9 @@
                 Array.isArray(
                     json?.data?.data
                 )
-                    ? json.data.data
+                    ? json.data.data.map(
+                        sanitizeExaminationRow
+                    )
                     : [];
 
             allData.push(
@@ -761,7 +784,9 @@
                     Array.isArray(
                         json?.data?.data
                     )
-                        ? json.data.data
+                        ? json.data.data.map(
+                            sanitizeExaminationRow
+                        )
                         : [];
 
                 allData.push(

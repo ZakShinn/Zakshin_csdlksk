@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.9.6
+// @version      1.9.8
 // @description  Xuất toàn bộ danh sách khám sức khỏe từ csdlksk ra Excel
-// @match        https://admin.csdlksk.vn/admin/operation/health-checkup*
+// @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      api.emrhub.vn
@@ -31,6 +31,25 @@
 
     const TARGET_PATH =
         "/admin/operation/health-checkup";
+
+    // Field API không dùng khi xuất Excel (vd. PDF base64 rất lớn)
+    const EXCLUDED_EXPORT_FIELDS = [
+        "base64_ca"
+    ];
+
+    function sanitizeExaminationRow(item) {
+        if (!item || typeof item !== "object") {
+            return item;
+        }
+
+        const cleaned = { ...item };
+
+        for (const field of EXCLUDED_EXPORT_FIELDS) {
+            delete cleaned[field];
+        }
+
+        return cleaned;
+    }
 
     // ============================================================
     // CSS
@@ -861,7 +880,9 @@
                 ) || 0;
 
             let allData =
-                [...firstData.data];
+                firstData.data.map(
+                    sanitizeExaminationRow
+                );
 
             console.log(
                 `[KSK Export] Tổng hồ sơ: ${totalElements}`
@@ -937,7 +958,9 @@
                                 )
                             ) {
                                 allData.push(
-                                    ...rows
+                                    ...rows.map(
+                                        sanitizeExaminationRow
+                                    )
                                 );
                             }
 
@@ -1228,29 +1251,76 @@
         }
     }
 
-    // Load ban đầu
-    updateUI();
-
-    // Theo dõi URL vì trang admin có thể là SPA
     let lastUrl =
         location.href;
 
+    let updateTimer = null;
+
+    function scheduleUpdateUI() {
+        if (updateTimer) {
+            clearTimeout(updateTimer);
+        }
+
+        updateTimer = setTimeout(() => {
+            updateTimer = null;
+            updateUI();
+        }, 200);
+    }
+
+    function onUrlMaybeChanged() {
+        const current =
+            location.href;
+
+        if (current === lastUrl) {
+            return;
+        }
+
+        lastUrl = current;
+        scheduleUpdateUI();
+    }
+
+    // Hook History API (SPA navigate không reload trang)
+    const historyMethods = [
+        "pushState",
+        "replaceState"
+    ];
+
+    for (const method of historyMethods) {
+        const original =
+            history[method];
+
+        if (typeof original !== "function") {
+            continue;
+        }
+
+        history[method] = function (...args) {
+            const result =
+                original.apply(
+                    this,
+                    args
+                );
+
+            onUrlMaybeChanged();
+            return result;
+        };
+    }
+
+    window.addEventListener(
+        "popstate",
+        onUrlMaybeChanged
+    );
+
+    // Một số router SPA dùng hash
+    window.addEventListener(
+        "hashchange",
+        onUrlMaybeChanged
+    );
+
+    // Theo dõi DOM: framework có thể xóa nút, hoặc đổi URL ngoài History API
     const observer =
         new MutationObserver(() => {
-            if (
-                location.href !==
-                lastUrl
-            ) {
-                lastUrl =
-                    location.href;
+            onUrlMaybeChanged();
 
-                setTimeout(
-                    updateUI,
-                    300
-                );
-            }
-
-            // Nếu framework xóa nút thì tạo lại
             if (
                 isCorrectPage() &&
                 !document.getElementById(
@@ -1268,5 +1338,11 @@
             subtree: true
         }
     );
+
+    // Load ban đầu + vài lần sau (SPA render muộn)
+    updateUI();
+    setTimeout(updateUI, 500);
+    setTimeout(updateUI, 1500);
+    setTimeout(updateUI, 3000);
 
 })();

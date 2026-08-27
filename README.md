@@ -51,21 +51,17 @@ Sau khi cài xong, đảm bảo script đang ở trạng thái:
 Enabled
 ```
 
-Script chỉ hoạt động tại:
-
-```text
-https://admin.csdlksk.vn/admin/operation/health-checkup
-```
+Script chạy trên toàn bộ `https://admin.csdlksk.vn/*`. Nút xuất chỉ hiện khi vào trang Health Checkup (kể cả điều hướng SPA từ trang khác).
 
 ## Bước 4 - Sử dụng
 
-Đăng nhập CSDL KSK và truy cập:
+Đăng nhập CSDL KSK rồi mở trang Health Checkup (có thể vào trực tiếp hoặc điều hướng từ menu):
 
 ```text
 https://admin.csdlksk.vn/admin/operation/health-checkup
 ```
 
-Sau khi trang tải xong sẽ xuất hiện nút:
+Sau khi vào đúng trang sẽ xuất hiện nút:
 
 ```text
 📊 Xuất Excel
@@ -176,9 +172,9 @@ Kiểm tra:
 
 ```text
 1. Violentmonkey đã được bật.
-2. Script đã được Enable.
-3. Đang truy cập đúng trang: https://admin.csdlksk.vn/admin/operation/health-checkup
-4. Reload lại trang bằng Ctrl + F5.
+2. Script đã được Enable (phiên bản ≥ 1.9.8, @match = https://admin.csdlksk.vn/*).
+3. Đang ở trang Health Checkup (pathname chứa /admin/operation/health-checkup).
+4. Nếu vừa cập nhật script: tắt/bật lại script hoặc reload bằng Ctrl + F5.
 ```
 
 ## Không tìm thấy Access Token
