@@ -1,21 +1,35 @@
 (async () => {
     // ============================================================
-    // EMRHUB - XUẤT TOÀN BỘ HEALTH EXAMINATIONS RA EXCEL
+    // EMRHUB - XUẤT TOÀN BỘ HEALTH EXAMINATIONS / HEALTH DATA RA EXCEL
     // ============================================================
 
-    // Hai nguồn API: Nhập liệu + Liên thông (/click)
-    const API_SOURCES = [
-        {
-            label: "Nhập liệu",
-            url:
-                "https://api.emrhub.vn/api/checkup/health-examinations"
-        },
-        {
-            label: "Liên thông",
-            url:
-                "https://api.emrhub.vn/api/checkup/health-examinations/click"
-        }
-    ];
+    const isHealthDataPage =
+        location.pathname.startsWith(
+            "/admin/operation/health-data"
+        );
+
+    // Hai nguồn API (Health Checkup): Nhập liệu + Liên thông (/click)
+    // Health Data: lịch sử sync checkup
+    const API_SOURCES = isHealthDataPage
+        ? [
+            {
+                label: "Health Data",
+                url:
+                    "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history"
+            }
+        ]
+        : [
+            {
+                label: "Nhập liệu",
+                url:
+                    "https://api.emrhub.vn/api/checkup/health-examinations"
+            },
+            {
+                label: "Liên thông",
+                url:
+                    "https://api.emrhub.vn/api/checkup/health-examinations/click"
+            }
+        ];
 
     // Nếu API không cho page_size=100, đổi thành 50 hoặc 10.
     const PAGE_SIZE = 100;
@@ -973,6 +987,31 @@
             );
         }
 
+        // ISO: 2026-09-04T17:15:32.317196
+        if (
+            /^\d{4}-\d{2}-\d{2}T/.test(s)
+        ) {
+            const d = new Date(s);
+
+            if (!Number.isNaN(d.getTime())) {
+                const pad =
+                    n =>
+                        String(n).padStart(
+                            2,
+                            "0"
+                        );
+
+                return (
+                    `${pad(d.getDate())}/` +
+                    `${pad(d.getMonth() + 1)}/` +
+                    `${d.getFullYear()} ` +
+                    `${pad(d.getHours())}:` +
+                    `${pad(d.getMinutes())}:` +
+                    `${pad(d.getSeconds())}`
+                );
+            }
+        }
+
         return formatDate(s);
     }
 
@@ -1051,12 +1090,23 @@
     ) {
 
         const baseKey =
-            item.check_up_id ??
-            (
-                `${item.patient_id || ""}_` +
-                `${item.ngay_kham || ""}_` +
-                `${item.id_number || ""}`
-            );
+            isHealthDataPage
+                ? (
+                    item.id ??
+                    (
+                        `${item.facility_code || ""}_` +
+                        `${item.ten_bn || ""}_` +
+                        `${item.created_at || ""}`
+                    )
+                )
+                : (
+                    item.check_up_id ??
+                    (
+                        `${item.patient_id || ""}_` +
+                        `${item.ngay_kham || ""}_` +
+                        `${item.id_number || ""}`
+                    )
+                );
 
         // Giữ cả hai nguồn nếu cùng hồ sơ xuất hiện ở cả hai API
         const key =
@@ -1129,65 +1179,101 @@
     // ============================================================
 
     const excelData =
-        allData.map(
-            (item, index) => ({
+        isHealthDataPage
+            ? allData.map(
+                (item, index) => ({
 
-                "STT":
-                    index + 1,
+                    "STT":
+                        index + 1,
 
-                "Patient ID":
-                    item.patient_id ?? "",
+                    "ID":
+                        item.id ?? "",
 
-                "Check Up ID":
-                    item.check_up_id ?? "",
+                    "Mã CSYT":
+                        item.facility_code != null
+                            ? String(
+                                item.facility_code
+                            )
+                            : "",
 
-                "Ngày khám":
-                    formatDateTime(
-                        item.ngay_kham
-                    ),
+                    "Loại GD":
+                        item.txn_type ?? "",
 
-                "Trạng thái":
-                    item.status ?? "",
+                    "Họ và tên BN":
+                        item.ten_bn ?? "",
 
-                "Loại":
-                    item.type ?? "",
+                    "Trạng thái":
+                        item.status ?? "",
 
-                "Lần khám":
-                    item.times ?? "",
-
-                "Họ và tên":
-                    item.full_name ?? "",
-
-                // Luôn giữ CCCD dưới dạng chuỗi
-                "CCCD":
-                    item.id_number != null
-                        ? String(
-                            item.id_number
-                        )
-                        : "",
-
-                "Ngày sinh":
-                    formatDate(
-                        item.date_of_birth
-                    ),
-
-                "Giới tính":
-                    item.gender === "male"
-                        ? "Nam"
-                        : item.gender === "female"
-                        ? "Nữ"
-                        : (
-                            item.gender ?? ""
+                    "Thời gian":
+                        formatDateTime(
+                            item.created_at
                         ),
 
-                "Địa chỉ":
-                    item.detail_address ?? "",
+                    "Thông báo":
+                        item.res_message ?? ""
 
-                "Nguồn":
-                    item._nguon ?? ""
+                })
+            )
+            : allData.map(
+                (item, index) => ({
 
-            })
-        );
+                    "STT":
+                        index + 1,
+
+                    "Patient ID":
+                        item.patient_id ?? "",
+
+                    "Check Up ID":
+                        item.check_up_id ?? "",
+
+                    "Ngày khám":
+                        formatDateTime(
+                            item.ngay_kham
+                        ),
+
+                    "Trạng thái":
+                        item.status ?? "",
+
+                    "Loại":
+                        item.type ?? "",
+
+                    "Lần khám":
+                        item.times ?? "",
+
+                    "Họ và tên":
+                        item.full_name ?? "",
+
+                    // Luôn giữ CCCD dưới dạng chuỗi
+                    "CCCD":
+                        item.id_number != null
+                            ? String(
+                                item.id_number
+                            )
+                            : "",
+
+                    "Ngày sinh":
+                        formatDate(
+                            item.date_of_birth
+                        ),
+
+                    "Giới tính":
+                        item.gender === "male"
+                            ? "Nam"
+                            : item.gender === "female"
+                            ? "Nữ"
+                            : (
+                                item.gender ?? ""
+                            ),
+
+                    "Địa chỉ":
+                        item.detail_address ?? "",
+
+                    "Nguồn":
+                        item._nguon ?? ""
+
+                })
+            );
 
     // ============================================================
     // 9. TẠO SHEET
@@ -1199,24 +1285,35 @@
         );
 
     // Chiều rộng các cột
-    ws["!cols"] = [
-        { wch: 8  }, // STT
-        { wch: 15 }, // Patient ID
-        { wch: 15 }, // Check Up ID
-        { wch: 20 }, // Ngày khám
-        { wch: 15 }, // Trạng thái
-        { wch: 12 }, // Loại
-        { wch: 10 }, // Lần khám
-        { wch: 30 }, // Họ tên
-        { wch: 20 }, // CCCD
-        { wch: 15 }, // Ngày sinh
-        { wch: 12 }, // Giới tính
-        { wch: 50 }, // Địa chỉ
-        { wch: 12 }  // Nguồn
-    ];
+    ws["!cols"] = isHealthDataPage
+        ? [
+            { wch: 8  },
+            { wch: 38 },
+            { wch: 18 },
+            { wch: 14 },
+            { wch: 28 },
+            { wch: 12 },
+            { wch: 20 },
+            { wch: 40 }
+        ]
+        : [
+            { wch: 8  }, // STT
+            { wch: 15 }, // Patient ID
+            { wch: 15 }, // Check Up ID
+            { wch: 20 }, // Ngày khám
+            { wch: 15 }, // Trạng thái
+            { wch: 12 }, // Loại
+            { wch: 10 }, // Lần khám
+            { wch: 30 }, // Họ tên
+            { wch: 20 }, // CCCD
+            { wch: 15 }, // Ngày sinh
+            { wch: 12 }, // Giới tính
+            { wch: 50 }, // Địa chỉ
+            { wch: 12 }  // Nguồn
+        ];
 
     // ============================================================
-    // 10. ÉP CCCD THÀNH TEXT
+    // 10. ÉP MÃ CSYT / CCCD THÀNH TEXT
     // ============================================================
 
     if (ws["!ref"]) {
@@ -1226,7 +1323,10 @@
                 ws["!ref"]
             );
 
-        // CCCD = cột index 8
+        // Health Data: Mã CSYT = cột 2 | Checkup: CCCD = cột 8
+        const textCol =
+            isHealthDataPage ? 2 : 8;
+
         for (
             let r = 1;
             r <= range.e.r;
@@ -1236,7 +1336,7 @@
             const address =
                 XLSX.utils.encode_cell({
                     r,
-                    c: 8
+                    c: textCol
                 });
 
             const cell =
@@ -1268,7 +1368,9 @@
     XLSX.utils.book_append_sheet(
         wb,
         ws,
-        "Danh sách khám"
+        isHealthDataPage
+            ? "Lịch sử sync"
+            : "Danh sách khám"
     );
 
     // ============================================================
@@ -1302,7 +1404,9 @@
         ).padStart(2, "0");
 
     const fileName =
-        `PhieuKhamCsdlksk_${yyyy}-${mm}-${dd}_${hh}-${min}.xlsx`;
+        isHealthDataPage
+            ? `csdlksk_health_data_${yyyy}-${mm}-${dd}_${hh}-${min}.xlsx`
+            : `PhieuKhamCsdlksk_${yyyy}-${mm}-${dd}_${hh}-${min}.xlsx`;
 
     // ============================================================
     // 14. XUẤT FILE
@@ -1323,16 +1427,16 @@
     );
 
     console.log(
-        `👥 Tổng hồ sơ xuất: ${excelData.length}`
+        `👥 Tổng bản ghi xuất: ${excelData.length}`
     );
 
     if (
-        failedPages.length
+        allFailedPages.length
     ) {
 
         console.warn(
-            `⚠️ Chưa lấy được ${failedPages.length} trang:`,
-            failedPages
+            `⚠️ Chưa lấy được ${allFailedPages.length} trang:`,
+            allFailedPages
         );
 
     } else {

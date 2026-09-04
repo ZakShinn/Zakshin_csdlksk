@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.10.2
-// @description  Xuất toàn bộ danh sách khám sức khỏe từ csdlksk ra Excel
+// @version      1.11.0
+// @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
@@ -32,6 +32,9 @@
         }
     ];
 
+    const HEALTH_DATA_API =
+        "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history";
+
     const PAGE_SIZE = 100;
 
     // Số request chạy đồng thời.
@@ -40,8 +43,12 @@
 
     const MAX_RETRY = 3;
 
-    const TARGET_PATH =
-        "/admin/operation/health-checkup";
+    const PAGE_PATHS = {
+        checkup:
+            "/admin/operation/health-checkup",
+        healthData:
+            "/admin/operation/health-data"
+    };
 
     // Field API không dùng khi xuất Excel (vd. PDF base64 rất lớn)
     const EXCLUDED_EXPORT_FIELDS = [
@@ -293,8 +300,22 @@
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    function getCurrentPageMode() {
+        const path = location.pathname;
+
+        if (path.startsWith(PAGE_PATHS.checkup)) {
+            return "checkup";
+        }
+
+        if (path.startsWith(PAGE_PATHS.healthData)) {
+            return "healthData";
+        }
+
+        return null;
+    }
+
     function isCorrectPage() {
-        return location.pathname.startsWith(TARGET_PATH);
+        return getCurrentPageMode() !== null;
     }
 
     // ============================================================
@@ -609,29 +630,51 @@
         page,
         token,
         apiUrl,
-        retry = 0
+        retry = 0,
+        requestOpts = {}
     ) {
-        const url =
-            `${apiUrl}` +
-            `?page_number=${page}` +
+        const method =
+            requestOpts.method || "GET";
+
+        const formBody =
+            requestOpts.formBody === true;
+
+        const query =
+            `page_number=${page}` +
             `&page_size=${PAGE_SIZE}`;
 
+        const url =
+            formBody
+                ? apiUrl
+                : `${apiUrl}?${query}`;
+
         try {
+            const headers = {
+                Accept: "application/json",
+
+                Authorization:
+                    `Bearer ${token}`
+            };
+
+            if (formBody) {
+                headers["Content-Type"] =
+                    "application/x-www-form-urlencoded";
+            }
+
             const response =
                 await gmRequest({
-                    method: "GET",
+                    method,
 
                     url,
 
                     // Trang có base64_ca rất lớn cần timeout dài hơn
                     timeout: 90000,
 
-                    headers: {
-                        Accept: "application/json",
+                    headers,
 
-                        Authorization:
-                            `Bearer ${token}`
-                    }
+                    data: formBody
+                        ? query
+                        : undefined
                 });
 
             if (
@@ -699,7 +742,8 @@
                     page,
                     token,
                     apiUrl,
-                    retry + 1
+                    retry + 1,
+                    requestOpts
                 );
             }
 
@@ -735,6 +779,10 @@
         return `${dd}/${mm}/${yyyy}`;
     }
 
+    function pad2(n) {
+        return String(n).padStart(2, "0");
+    }
+
     function formatDateTime(value) {
         if (!value) {
             return "";
@@ -765,7 +813,38 @@
             );
         }
 
+        // ISO: 2026-09-04T17:15:32.317196
+        if (
+            /^\d{4}-\d{2}-\d{2}T/.test(str)
+        ) {
+            const d = new Date(str);
+
+            if (!Number.isNaN(d.getTime())) {
+                return (
+                    `${pad2(d.getDate())}/` +
+                    `${pad2(d.getMonth() + 1)}/` +
+                    `${d.getFullYear()} ` +
+                    `${pad2(d.getHours())}:` +
+                    `${pad2(d.getMinutes())}:` +
+                    `${pad2(d.getSeconds())}`
+                );
+            }
+        }
+
         return formatDate(str);
+    }
+
+    function buildExportFileName(prefix) {
+        const now = new Date();
+
+        return (
+            `${prefix}_` +
+            `${now.getFullYear()}-` +
+            `${pad2(now.getMonth() + 1)}-` +
+            `${pad2(now.getDate())}_` +
+            `${pad2(now.getHours())}-` +
+            `${pad2(now.getMinutes())}.xlsx`
+        );
     }
 
     // ============================================================
@@ -843,7 +922,7 @@
 
         exportButton.addEventListener(
             "click",
-            exportAll
+            onExportClick
         );
 
         exportBox.appendChild(
@@ -895,7 +974,8 @@
         pageNumbers,
         token,
         apiUrl,
-        onPageDone
+        onPageDone,
+        requestOpts = {}
     ) {
         const results = [];
 
@@ -921,7 +1001,9 @@
                         await fetchPage(
                             page,
                             token,
-                            apiUrl
+                            apiUrl,
+                            0,
+                            requestOpts
                         );
 
                     results.push({
@@ -979,11 +1061,16 @@
         token,
         onProgress
     ) {
+        const requestOpts =
+            source.requestOpts || {};
+
         const first =
             await fetchPage(
                 1,
                 token,
-                source.url
+                source.url,
+                0,
+                requestOpts
             );
 
         const firstData =
@@ -1054,7 +1141,8 @@
                             totalPages,
                             source.label
                         );
-                    }
+                    },
+                    requestOpts
                 );
 
             const failed = [];
@@ -1114,8 +1202,285 @@
     // EXPORT
     // ============================================================
 
-    async function exportAll() {
-        if (!isCorrectPage()) {
+    async function onExportClick() {
+        const mode = getCurrentPageMode();
+
+        if (mode === "checkup") {
+            await exportCheckup();
+            return;
+        }
+
+        if (mode === "healthData") {
+            await exportHealthDataHistory();
+            return;
+        }
+
+        alert(
+            "Chức năng xuất Excel chỉ chạy tại trang Health Checkup hoặc Health Data."
+        );
+    }
+
+    async function exportHealthDataHistory() {
+        exportButton.disabled = true;
+        exportButton.textContent =
+            "⏳ Đang xử lý...";
+
+        try {
+            setProgress(
+                2,
+                "🔑 Đang tìm token đăng nhập..."
+            );
+
+            const tokenInfo =
+                findToken();
+
+            if (!tokenInfo?.token) {
+                throw new Error(
+                    "Không tìm thấy access token. " +
+                    "Hãy đăng nhập lại trang rồi thử lại."
+                );
+            }
+
+            const token =
+                tokenInfo.token;
+
+            console.log(
+                "[KSK Export][Health Data] Token:",
+                tokenInfo.path
+            );
+
+            setProgress(
+                5,
+                "📥 Đang tải lịch sử sync checkup..."
+            );
+
+            const result =
+                await fetchAllFromSource(
+                    {
+                        label: "Health Data",
+                        url: HEALTH_DATA_API
+                    },
+                    token,
+                    (
+                        completed,
+                        totalPages
+                    ) => {
+                        const percent =
+                            Math.round(
+                                5 +
+                                (
+                                    completed /
+                                    totalPages
+                                ) *
+                                85
+                            );
+
+                        setProgress(
+                            percent,
+                            `📥 Đang tải lịch sử sync...<br>` +
+                            `${completed}/${totalPages} trang`
+                        );
+                    }
+                );
+
+            const allData =
+                result.rows.map(
+                    ({ _nguon, ...rest }) =>
+                        rest
+                );
+
+            setProgress(
+                92,
+                "🧹 Đang xử lý dữ liệu..."
+            );
+
+            const unique =
+                new Map();
+
+            for (const item of allData) {
+                const key =
+                    item.id ??
+                    (
+                        `${item.facility_code ?? ""}_` +
+                        `${item.ten_bn ?? ""}_` +
+                        `${item.created_at ?? ""}`
+                    );
+
+                unique.set(
+                    String(key),
+                    item
+                );
+            }
+
+            const rows =
+                [...unique.values()];
+
+            const excelRows =
+                rows.map(
+                    (item, index) => ({
+                        "STT":
+                            index + 1,
+
+                        "ID":
+                            item.id ?? "",
+
+                        "Mã CSYT":
+                            item.facility_code != null
+                                ? String(
+                                    item.facility_code
+                                )
+                                : "",
+
+                        "Loại GD":
+                            item.txn_type ?? "",
+
+                        "Họ và tên BN":
+                            item.ten_bn ?? "",
+
+                        "Trạng thái":
+                            item.status ?? "",
+
+                        "Thời gian":
+                            formatDateTime(
+                                item.created_at
+                            ),
+
+                        "Thông báo":
+                            item.res_message ?? ""
+                    })
+                );
+
+            setProgress(
+                95,
+                "📊 Đang tạo file Excel..."
+            );
+
+            const ws =
+                XLSX.utils.json_to_sheet(
+                    excelRows
+                );
+
+            ws["!cols"] = [
+                { wch: 8 },
+                { wch: 38 },
+                { wch: 18 },
+                { wch: 14 },
+                { wch: 28 },
+                { wch: 12 },
+                { wch: 20 },
+                { wch: 40 }
+            ];
+
+            if (ws["!ref"]) {
+                ws["!autofilter"] = {
+                    ref: ws["!ref"]
+                };
+
+                const range =
+                    XLSX.utils.decode_range(
+                        ws["!ref"]
+                    );
+
+                // Ép Mã CSYT thành text
+                for (
+                    let r = 1;
+                    r <= range.e.r;
+                    r++
+                ) {
+                    const address =
+                        XLSX.utils.encode_cell({
+                            r,
+                            c: 2
+                        });
+
+                    const cell =
+                        ws[address];
+
+                    if (cell) {
+                        cell.t = "s";
+                        cell.z = "@";
+                    }
+                }
+            }
+
+            const wb =
+                XLSX.utils.book_new();
+
+            XLSX.utils.book_append_sheet(
+                wb,
+                ws,
+                "Lịch sử sync"
+            );
+
+            const fileName =
+                buildExportFileName(
+                    "csdlksk_health_data"
+                );
+
+            XLSX.writeFile(
+                wb,
+                fileName
+            );
+
+            setProgress(
+                100,
+                `<span id="ksk-export-status-success">` +
+                `✅ Hoàn tất: ${excelRows.length} bản ghi` +
+                `</span>`
+            );
+
+            exportButton.textContent =
+                "✅ Xuất Excel";
+
+            console.log(
+                `[KSK Export][Health Data] Hoàn tất ${excelRows.length} bản ghi`
+            );
+
+            if (
+                result.totalElements &&
+                excelRows.length !==
+                    result.totalElements
+            ) {
+                console.warn(
+                    `[KSK Export][Health Data] API báo ${result.totalElements}, ` +
+                    `file có ${excelRows.length} bản ghi.`
+                );
+            }
+
+            setTimeout(() => {
+                exportButton.textContent =
+                    "📊 Xuất Excel";
+            }, 2500);
+
+        } catch (error) {
+            console.error(
+                "[KSK Export][Health Data]",
+                error
+            );
+
+            setProgress(
+                0,
+                `<span id="ksk-export-status-error">` +
+                `❌ ${error.message}` +
+                `</span>`
+            );
+
+            exportButton.textContent =
+                "❌ Xuất lỗi";
+
+            setTimeout(() => {
+                exportButton.textContent =
+                    "📊 Xuất Excel";
+            }, 3000);
+
+        } finally {
+            exportButton.disabled =
+                false;
+        }
+    }
+
+    async function exportCheckup() {
+        if (getCurrentPageMode() !== "checkup") {
             alert(
                 "Chức năng này chỉ chạy tại trang Health Checkup."
             );
@@ -1409,34 +1774,10 @@
             // TÊN FILE
             // ----------------------------------------------------
 
-            const now =
-                new Date();
-
-            const yyyy =
-                now.getFullYear();
-
-            const mm =
-                String(
-                    now.getMonth() + 1
-                ).padStart(2, "0");
-
-            const dd =
-                String(
-                    now.getDate()
-                ).padStart(2, "0");
-
-            const hh =
-                String(
-                    now.getHours()
-                ).padStart(2, "0");
-
-            const mi =
-                String(
-                    now.getMinutes()
-                ).padStart(2, "0");
-
             const fileName =
-                `csdlksk_${yyyy}-${mm}-${dd}_${hh}-${mi}.xlsx`;
+                buildExportFileName(
+                    "csdlksk"
+                );
 
             XLSX.writeFile(
                 wb,
