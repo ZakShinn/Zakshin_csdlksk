@@ -8,6 +8,42 @@
             "/admin/operation/health-data"
         );
 
+    function pad2(n) {
+        return String(n).padStart(2, "0");
+    }
+
+    function toApiDateTime(
+        yyyy,
+        mm,
+        dd,
+        endOfDay = false
+    ) {
+        const datePart =
+            `${yyyy}${pad2(mm)}${pad2(dd)}`;
+
+        return endOfDay
+            ? `${datePart}235959`
+            : `${datePart}000000`;
+    }
+
+    // Mặc định: đầu tháng hiện tại → cuối hôm nay
+    // Có thể sửa HEALTH_DATA_START / HEALTH_DATA_END nếu cần.
+    const _now = new Date();
+    const HEALTH_DATA_START =
+        toApiDateTime(
+            _now.getFullYear(),
+            _now.getMonth() + 1,
+            1,
+            false
+        );
+    const HEALTH_DATA_END =
+        toApiDateTime(
+            _now.getFullYear(),
+            _now.getMonth() + 1,
+            _now.getDate(),
+            true
+        );
+
     // Hai nguồn API (Health Checkup): Nhập liệu + Liên thông (/click)
     // Health Data: lịch sử sync checkup
     const API_SOURCES = isHealthDataPage
@@ -15,7 +51,14 @@
             {
                 label: "Health Data",
                 url:
-                    "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history"
+                    "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history",
+                zeroBasedPages: true,
+                queryParams: {
+                    start_date:
+                        HEALTH_DATA_START,
+                    end_date:
+                        HEALTH_DATA_END
+                }
             }
         ]
         : [
@@ -30,6 +73,12 @@
                     "https://api.emrhub.vn/api/checkup/health-examinations/click"
             }
         ];
+
+    if (isHealthDataPage) {
+        console.log(
+            `[Health Data] Khoảng thời gian: ${HEALTH_DATA_START} → ${HEALTH_DATA_END}`
+        );
+    }
 
     // Nếu API không cho page_size=100, đổi thành 50 hoặc 10.
     const PAGE_SIZE = 100;
@@ -610,11 +659,42 @@
     async function fetchPage(
         page,
         apiUrl,
-        retry = 0
+        retry = 0,
+        queryParams = {}
     ) {
 
+        const params =
+            new URLSearchParams();
+
+        params.set(
+            "page_number",
+            String(page)
+        );
+
+        params.set(
+            "page_size",
+            String(PAGE_SIZE)
+        );
+
+        for (const [key, value] of Object.entries(
+            queryParams
+        )) {
+            if (
+                value === null ||
+                value === undefined ||
+                value === ""
+            ) {
+                continue;
+            }
+
+            params.set(
+                key,
+                String(value)
+            );
+        }
+
         const url =
-            `${apiUrl}?page_number=${page}&page_size=${PAGE_SIZE}`;
+            `${apiUrl}?${params.toString()}`;
 
         try {
 
@@ -715,7 +795,8 @@
                 return fetchPage(
                     page,
                     apiUrl,
-                    retry + 1
+                    retry + 1,
+                    queryParams
                 );
             }
 
@@ -738,14 +819,25 @@
     async function fetchAllFromSource(
         source
     ) {
+        const queryParams =
+            source.queryParams || {};
+
+        const zeroBased =
+            source.zeroBasedPages === true;
+
+        const firstPageNum =
+            zeroBased ? 0 : 1;
+
         console.log(
             `📥 [${source.label}] Đang lấy trang đầu tiên...`
         );
 
         const firstResponse =
             await fetchPage(
-                1,
-                source.url
+                firstPageNum,
+                source.url,
+                0,
+                queryParams
             );
 
         const firstPage =
@@ -787,11 +879,16 @@
         );
 
         console.log(
-            `📄 [${source.label}] Tổng số trang: ${totalPages}`
+            `📄 [${source.label}] Tổng số trang: ${totalPages}` +
+            (
+                zeroBased
+                    ? " (page 0-based)"
+                    : ""
+            )
         );
 
         console.log(
-            `📦 [${source.label}] Trang 1: ${firstPage.data.length} hồ sơ`
+            `📦 [${source.label}] Trang ${firstPageNum}: ${firstPage.data.length} hồ sơ`
         );
 
         console.log(
@@ -800,9 +897,14 @@
 
         const failedPages = [];
 
+        const lastPageNum =
+            zeroBased
+                ? totalPages - 1
+                : totalPages;
+
         for (
-            let page = 2;
-            page <= totalPages;
+            let page = firstPageNum + 1;
+            page <= lastPageNum;
             page++
         ) {
 
@@ -811,7 +913,9 @@
                 const json =
                     await fetchPage(
                         page,
-                        source.url
+                        source.url,
+                        0,
+                        queryParams
                     );
 
                 const data =
@@ -826,15 +930,20 @@
 
                 rows.push(...data);
 
+                const doneCount =
+                    zeroBased
+                        ? page + 1
+                        : page;
+
                 const percent =
                     (
-                        page /
+                        doneCount /
                         totalPages *
                         100
                     ).toFixed(1);
 
                 console.log(
-                    `✅ [${source.label}] ${page}/${totalPages}` +
+                    `✅ [${source.label}] ${doneCount}/${totalPages}` +
                     ` | ${percent}%` +
                     ` | +${data.length}` +
                     ` | Đã lấy: ${rows.length}`
@@ -874,7 +983,9 @@
                     const json =
                         await fetchPage(
                             page,
-                            source.url
+                            source.url,
+                            0,
+                            queryParams
                         );
 
                     const data =

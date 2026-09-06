@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.11.0
+// @version      1.12.0
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -287,6 +287,46 @@
         #ksk-export-status-error {
             color: #cf1322;
             font-weight: 600;
+        }
+
+        #ksk-export-date-box {
+            display: none;
+            width: 300px;
+            padding: 12px 14px;
+            background: #ffffff;
+            border: 1px solid #d9d9d9;
+            border-radius: 10px;
+            box-shadow: 0 4px 18px rgba(0,0,0,.15);
+            color: #333;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+
+        #ksk-export-date-box .ksk-date-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        #ksk-export-date-box .ksk-date-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        #ksk-export-date-box label {
+            min-width: 28px;
+            color: #555;
+        }
+
+        #ksk-export-date-box input[type="date"] {
+            flex: 1;
+            min-width: 0;
+            padding: 4px 6px;
+            border: 1px solid #d9d9d9;
+            border-radius: 6px;
+            font-size: 13px;
         }
     `;
 
@@ -639,9 +679,40 @@
         const formBody =
             requestOpts.formBody === true;
 
+        const extraParams =
+            requestOpts.queryParams || {};
+
+        const params = new URLSearchParams();
+
+        params.set(
+            "page_number",
+            String(page)
+        );
+
+        params.set(
+            "page_size",
+            String(PAGE_SIZE)
+        );
+
+        for (const [key, value] of Object.entries(
+            extraParams
+        )) {
+            if (
+                value === null ||
+                value === undefined ||
+                value === ""
+            ) {
+                continue;
+            }
+
+            params.set(
+                key,
+                String(value)
+            );
+        }
+
         const query =
-            `page_number=${page}` +
-            `&page_size=${PAGE_SIZE}`;
+            params.toString();
 
         const url =
             formBody
@@ -847,6 +918,95 @@
         );
     }
 
+    function toInputDateValue(date) {
+        return (
+            `${date.getFullYear()}-` +
+            `${pad2(date.getMonth() + 1)}-` +
+            `${pad2(date.getDate())}`
+        );
+    }
+
+    function getDefaultHealthDataRange() {
+        const end = new Date();
+        const start = new Date(
+            end.getFullYear(),
+            end.getMonth(),
+            1
+        );
+
+        return {
+            start: toInputDateValue(start),
+            end: toInputDateValue(end)
+        };
+    }
+
+    // API: YYYYMMDDHHmmss
+    function toApiDateTime(
+        inputDate,
+        endOfDay = false
+    ) {
+        if (!inputDate) {
+            return "";
+        }
+
+        const parts =
+            String(inputDate).split("-");
+
+        if (parts.length !== 3) {
+            return "";
+        }
+
+        const [yyyy, mm, dd] = parts;
+
+        if (endOfDay) {
+            return `${yyyy}${mm}${dd}235959`;
+        }
+
+        return `${yyyy}${mm}${dd}000000`;
+    }
+
+    function getHealthDataDateRange() {
+        const startInput =
+            document.getElementById(
+                "ksk-export-start-date"
+            );
+
+        const endInput =
+            document.getElementById(
+                "ksk-export-end-date"
+            );
+
+        const defaults =
+            getDefaultHealthDataRange();
+
+        const startValue =
+            startInput?.value ||
+            defaults.start;
+
+        const endValue =
+            endInput?.value ||
+            defaults.end;
+
+        if (startValue > endValue) {
+            throw new Error(
+                "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc."
+            );
+        }
+
+        return {
+            startInput: startValue,
+            endInput: endValue,
+            start_date: toApiDateTime(
+                startValue,
+                false
+            ),
+            end_date: toApiDateTime(
+                endValue,
+                true
+            )
+        };
+    }
+
     // ============================================================
     // UI
     // ============================================================
@@ -856,6 +1016,7 @@
     let progressBox;
     let progressText;
     let progressBar;
+    let dateBox;
 
     function createUI() {
         if (
@@ -863,6 +1024,7 @@
                 "ksk-export-box"
             )
         ) {
+            syncDateFilterUI();
             return;
         }
 
@@ -871,6 +1033,27 @@
 
         exportBox.id =
             "ksk-export-box";
+
+        dateBox =
+            document.createElement("div");
+
+        dateBox.id =
+            "ksk-export-date-box";
+
+        const defaults =
+            getDefaultHealthDataRange();
+
+        dateBox.innerHTML = `
+            <div class="ksk-date-title">Khoảng thời gian xuất</div>
+            <div class="ksk-date-row">
+                <label for="ksk-export-start-date">Từ</label>
+                <input type="date" id="ksk-export-start-date" value="${defaults.start}">
+            </div>
+            <div class="ksk-date-row">
+                <label for="ksk-export-end-date">Đến</label>
+                <input type="date" id="ksk-export-end-date" value="${defaults.end}">
+            </div>
+        `;
 
         progressBox =
             document.createElement("div");
@@ -926,6 +1109,10 @@
         );
 
         exportBox.appendChild(
+            dateBox
+        );
+
+        exportBox.appendChild(
             progressBox
         );
 
@@ -936,6 +1123,25 @@
         document.body.appendChild(
             exportBox
         );
+
+        syncDateFilterUI();
+    }
+
+    function syncDateFilterUI() {
+        const box =
+            dateBox ||
+            document.getElementById(
+                "ksk-export-date-box"
+            );
+
+        if (!box) {
+            return;
+        }
+
+        box.style.display =
+            getCurrentPageMode() === "healthData"
+                ? "block"
+                : "none";
     }
 
     function removeUI() {
@@ -944,6 +1150,13 @@
                 "ksk-export-box"
             )
             ?.remove();
+
+        exportBox = null;
+        exportButton = null;
+        progressBox = null;
+        progressText = null;
+        progressBar = null;
+        dateBox = null;
     }
 
     function setProgress(
@@ -1064,9 +1277,15 @@
         const requestOpts =
             source.requestOpts || {};
 
+        const zeroBased =
+            source.zeroBasedPages === true;
+
+        const firstPageNum =
+            zeroBased ? 0 : 1;
+
         const first =
             await fetchPage(
-                1,
+                firstPageNum,
                 token,
                 source.url,
                 0,
@@ -1106,7 +1325,12 @@
         console.log(
             `[KSK Export] [${source.label}] ` +
             `Tổng hồ sơ: ${totalElements}, ` +
-            `trang: ${totalPages}`
+            `trang: ${totalPages}` +
+            (
+                zeroBased
+                    ? " (page 0-based)"
+                    : ""
+            )
         );
 
         onProgress?.(
@@ -1118,9 +1342,14 @@
         if (totalPages > 1) {
             const pages = [];
 
+            const lastPageNum =
+                zeroBased
+                    ? totalPages - 1
+                    : totalPages;
+
             for (
-                let page = 2;
-                page <= totalPages;
+                let page = firstPageNum + 1;
+                page <= lastPageNum;
                 page++
             ) {
                 pages.push(page);
@@ -1226,6 +1455,9 @@
             "⏳ Đang xử lý...";
 
         try {
+            const dateRange =
+                getHealthDataDateRange();
+
             setProgress(
                 2,
                 "🔑 Đang tìm token đăng nhập..."
@@ -1249,16 +1481,32 @@
                 tokenInfo.path
             );
 
+            console.log(
+                "[KSK Export][Health Data] Range:",
+                dateRange.start_date,
+                "→",
+                dateRange.end_date
+            );
+
             setProgress(
                 5,
-                "📥 Đang tải lịch sử sync checkup..."
+                `📥 Đang tải ${dateRange.startInput} → ${dateRange.endInput}...`
             );
 
             const result =
                 await fetchAllFromSource(
                     {
                         label: "Health Data",
-                        url: HEALTH_DATA_API
+                        url: HEALTH_DATA_API,
+                        zeroBasedPages: true,
+                        requestOpts: {
+                            queryParams: {
+                                start_date:
+                                    dateRange.start_date,
+                                end_date:
+                                    dateRange.end_date
+                            }
+                        }
                     },
                     token,
                     (
@@ -1277,7 +1525,7 @@
 
                         setProgress(
                             percent,
-                            `📥 Đang tải lịch sử sync...<br>` +
+                            `📥 Đang tải ${dateRange.startInput} → ${dateRange.endInput}<br>` +
                             `${completed}/${totalPages} trang`
                         );
                     }
@@ -1852,6 +2100,7 @@
     function updateUI() {
         if (isCorrectPage()) {
             createUI();
+            syncDateFilterUI();
         } else {
             removeUI();
         }
