@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.12.0
+// @version      1.13.0
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -234,6 +234,25 @@
             box-shadow: 0 4px 18px rgba(0,0,0,.15);
             color: #333;
             font-size: 13px;
+            opacity: 0;
+            transform: translateY(14px) scale(0.96);
+            transition:
+                opacity .38s cubic-bezier(.22, 1, .36, 1),
+                transform .38s cubic-bezier(.22, 1, .36, 1),
+                box-shadow .38s ease;
+            will-change: opacity, transform;
+        }
+
+        #ksk-export-progress-box.ksk-visible {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        #ksk-export-progress-box.ksk-hiding {
+            opacity: 0;
+            transform: translateY(10px) scale(0.96);
+            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+            pointer-events: none;
         }
 
         #ksk-export-progress-text {
@@ -1017,6 +1036,11 @@
     let progressText;
     let progressBar;
     let dateBox;
+    let hideProgressTimer = null;
+    let hideProgressAnimTimer = null;
+
+    const PROGRESS_HIDE_DELAY_MS = 10000;
+    const PROGRESS_HIDE_ANIM_MS = 380;
 
     function createUI() {
         if (
@@ -1157,16 +1181,106 @@
         progressText = null;
         progressBar = null;
         dateBox = null;
+        clearHideProgressTimers();
+    }
+
+    function clearHideProgressTimers() {
+        if (hideProgressTimer) {
+            clearTimeout(hideProgressTimer);
+            hideProgressTimer = null;
+        }
+
+        if (hideProgressAnimTimer) {
+            clearTimeout(hideProgressAnimTimer);
+            hideProgressAnimTimer = null;
+        }
+    }
+
+    function showProgressBox() {
+        if (!progressBox) {
+            return;
+        }
+
+        clearHideProgressTimers();
+
+        progressBox.classList.remove(
+            "ksk-hiding"
+        );
+
+        const alreadyOpen =
+            progressBox.style.display === "block" &&
+            progressBox.classList.contains(
+                "ksk-visible"
+            );
+
+        if (alreadyOpen) {
+            return;
+        }
+
+        progressBox.style.display =
+            "block";
+
+        // Force reflow rồi mới add class để chạy animation
+        void progressBox.offsetWidth;
+
+        requestAnimationFrame(() => {
+            progressBox?.classList.add(
+                "ksk-visible"
+            );
+        });
+    }
+
+    function hideProgressBox() {
+        if (!progressBox) {
+            return;
+        }
+
+        clearHideProgressTimers();
+
+        progressBox.classList.remove(
+            "ksk-visible"
+        );
+
+        progressBox.classList.add(
+            "ksk-hiding"
+        );
+
+        hideProgressAnimTimer =
+            setTimeout(() => {
+                if (!progressBox) {
+                    return;
+                }
+
+                progressBox.style.display =
+                    "none";
+
+                progressBox.classList.remove(
+                    "ksk-hiding"
+                );
+
+                hideProgressAnimTimer =
+                    null;
+            }, PROGRESS_HIDE_ANIM_MS);
+    }
+
+    function scheduleHideProgress(
+        delayMs = PROGRESS_HIDE_DELAY_MS
+    ) {
+        clearHideProgressTimers();
+
+        hideProgressTimer =
+            setTimeout(() => {
+                hideProgressTimer = null;
+                hideProgressBox();
+            }, delayMs);
     }
 
     function setProgress(
         percent,
-        text
+        text,
+        options = {}
     ) {
-        if (progressBox) {
-            progressBox.style.display =
-                "block";
-        }
+        showProgressBox();
 
         if (progressBar) {
             progressBar.style.width =
@@ -1176,6 +1290,13 @@
         if (progressText) {
             progressText.innerHTML =
                 text;
+        }
+
+        if (options.autoHide) {
+            scheduleHideProgress(
+                options.hideAfterMs ??
+                PROGRESS_HIDE_DELAY_MS
+            );
         }
     }
 
@@ -1674,7 +1795,8 @@
                 100,
                 `<span id="ksk-export-status-success">` +
                 `✅ Hoàn tất: ${excelRows.length} bản ghi` +
-                `</span>`
+                `</span>`,
+                { autoHide: true }
             );
 
             exportButton.textContent =
@@ -1710,7 +1832,8 @@
                 0,
                 `<span id="ksk-export-status-error">` +
                 `❌ ${error.message}` +
-                `</span>`
+                `</span>`,
+                { autoHide: true }
             );
 
             exportButton.textContent =
@@ -2040,7 +2163,8 @@
                 100,
                 `<span id="ksk-export-status-success">` +
                 `✅ Hoàn tất: ${excelRows.length} hồ sơ` +
-                `</span>`
+                `</span>`,
+                { autoHide: true }
             );
 
             exportButton.textContent =
@@ -2076,7 +2200,8 @@
                 0,
                 `<span id="ksk-export-status-error">` +
                 `❌ ${error.message}` +
-                `</span>`
+                `</span>`,
+                { autoHide: true }
             );
 
             exportButton.textContent =
