@@ -44,6 +44,23 @@
             true
         );
 
+    // Health Checkup: "Liên thông" | "Nhập liệu" | "all"
+    // Mặc định Liên thông để xuất nhanh hơn.
+    const CHECKUP_SOURCE = "Liên thông";
+
+    const CHECKUP_API_SOURCES = [
+        {
+            label: "Nhập liệu",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations"
+        },
+        {
+            label: "Liên thông",
+            url:
+                "https://api.emrhub.vn/api/checkup/health-examinations/click"
+        }
+    ];
+
     // Hai nguồn API (Health Checkup): Nhập liệu + Liên thông (/click)
     // Health Data: lịch sử sync checkup
     const API_SOURCES = isHealthDataPage
@@ -61,22 +78,35 @@
                 }
             }
         ]
-        : [
-            {
-                label: "Nhập liệu",
-                url:
-                    "https://api.emrhub.vn/api/checkup/health-examinations"
-            },
-            {
-                label: "Liên thông",
-                url:
-                    "https://api.emrhub.vn/api/checkup/health-examinations/click"
-            }
-        ];
+        : CHECKUP_SOURCE === "all"
+            ? CHECKUP_API_SOURCES
+            : CHECKUP_API_SOURCES.filter(
+                source =>
+                    source.label ===
+                    CHECKUP_SOURCE
+            );
+
+    if (
+        !isHealthDataPage &&
+        !API_SOURCES.length
+    ) {
+        throw new Error(
+            `CHECKUP_SOURCE không hợp lệ: ${CHECKUP_SOURCE}. ` +
+            `Dùng "Liên thông", "Nhập liệu" hoặc "all".`
+        );
+    }
 
     if (isHealthDataPage) {
         console.log(
             `[Health Data] Khoảng thời gian: ${HEALTH_DATA_START} → ${HEALTH_DATA_END}`
+        );
+    } else {
+        console.log(
+            `[Health Checkup] Nguồn xuất: ${
+                API_SOURCES
+                    .map(s => s.label)
+                    .join(", ")
+            }`
         );
     }
 
@@ -1127,7 +1157,7 @@
     }
 
     // ============================================================
-    // 6. LẤY DỮ LIỆU TỪ CẢ HAI NGUỒN
+    // 6. LẤY DỮ LIỆU TỪ NGUỒN ĐÃ CHỌN
     // ============================================================
 
     let allData = [];
@@ -1247,7 +1277,7 @@
     );
 
     console.log(
-        `📊 API báo tổng (cả 2 nguồn): ${totalElementsExpected}`
+        `📊 API báo tổng: ${totalElementsExpected}`
     );
 
     if (
@@ -1277,7 +1307,7 @@
     } else {
 
         console.log(
-            "🎯 Số hồ sơ khớp với tổng total_elements của cả 2 nguồn."
+            "🎯 Số hồ sơ khớp với tổng total_elements."
         );
     }
 

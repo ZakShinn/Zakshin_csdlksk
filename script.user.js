@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.13.0
+// @version      1.15.0
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -221,7 +221,7 @@
             display: flex;
             flex-direction: column;
             align-items: flex-end;
-            gap: 8px;
+            gap: 6px;
         }
 
         #ksk-export-progress-box {
@@ -346,6 +346,59 @@
             border: 1px solid #d9d9d9;
             border-radius: 6px;
             font-size: 13px;
+        }
+
+        #ksk-export-source-box {
+            display: none;
+            padding: 3px;
+            background: #ffffff;
+            border: 1px solid #d9d9d9;
+            border-radius: 9px;
+            box-shadow: 0 4px 14px rgba(0,0,0,.12);
+            box-sizing: border-box;
+        }
+
+        #ksk-export-source-box .ksk-source-options {
+            display: flex;
+            gap: 2px;
+        }
+
+        #ksk-export-source-box label {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 6px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            color: #555;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.2;
+            white-space: nowrap;
+            user-select: none;
+        }
+
+        #ksk-export-source-box label:hover {
+            color: #1677ff;
+            background: #f0f5ff;
+        }
+
+        #ksk-export-source-box input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #ksk-export-source-box label:has(input:checked) {
+            color: #fff;
+            background: #1677ff;
+        }
+
+        #ksk-export-source-box label:has(input:checked):hover {
+            color: #fff;
+            background: #0958d9;
         }
     `;
 
@@ -1036,6 +1089,7 @@
     let progressText;
     let progressBar;
     let dateBox;
+    let sourceBox;
     let hideProgressTimer = null;
     let hideProgressAnimTimer = null;
 
@@ -1048,7 +1102,7 @@
                 "ksk-export-box"
             )
         ) {
-            syncDateFilterUI();
+            syncFilterUI();
             return;
         }
 
@@ -1076,6 +1130,29 @@
             <div class="ksk-date-row">
                 <label for="ksk-export-end-date">Đến</label>
                 <input type="date" id="ksk-export-end-date" value="${defaults.end}">
+            </div>
+        `;
+
+        sourceBox =
+            document.createElement("div");
+
+        sourceBox.id =
+            "ksk-export-source-box";
+
+        sourceBox.innerHTML = `
+            <div class="ksk-source-options">
+                <label>
+                    <input type="radio" name="ksk-export-source" value="Nhập liệu">
+                    Nhập liệu
+                </label>
+                <label>
+                    <input type="radio" name="ksk-export-source" value="Liên thông" checked>
+                    Liên thông
+                </label>
+                <label>
+                    <input type="radio" name="ksk-export-source" value="all">
+                    Cả 2
+                </label>
             </div>
         `;
 
@@ -1137,6 +1214,10 @@
         );
 
         exportBox.appendChild(
+            sourceBox
+        );
+
+        exportBox.appendChild(
             progressBox
         );
 
@@ -1148,24 +1229,68 @@
             exportBox
         );
 
-        syncDateFilterUI();
+        syncFilterUI();
     }
 
-    function syncDateFilterUI() {
-        const box =
+    function syncFilterUI() {
+        const mode = getCurrentPageMode();
+
+        const dateFilter =
             dateBox ||
             document.getElementById(
                 "ksk-export-date-box"
             );
 
-        if (!box) {
-            return;
+        if (dateFilter) {
+            dateFilter.style.display =
+                mode === "healthData"
+                    ? "block"
+                    : "none";
         }
 
-        box.style.display =
-            getCurrentPageMode() === "healthData"
-                ? "block"
-                : "none";
+        const sourceFilter =
+            sourceBox ||
+            document.getElementById(
+                "ksk-export-source-box"
+            );
+
+        if (sourceFilter) {
+            sourceFilter.style.display =
+                mode === "checkup"
+                    ? "block"
+                    : "none";
+        }
+    }
+
+    function getSelectedCheckupSources() {
+        const selected =
+            document.querySelector(
+                'input[name="ksk-export-source"]:checked'
+            )?.value;
+
+        if (selected === "all") {
+            return API_SOURCES.slice();
+        }
+
+        const label =
+            selected === "Nhập liệu"
+                ? "Nhập liệu"
+                : "Liên thông";
+
+        const sources =
+            API_SOURCES.filter(
+                source =>
+                    source.label === label
+            );
+
+        if (sources.length) {
+            return sources;
+        }
+
+        return API_SOURCES.filter(
+            source =>
+                source.label === "Liên thông"
+        );
     }
 
     function removeUI() {
@@ -1181,6 +1306,7 @@
         progressText = null;
         progressBar = null;
         dateBox = null;
+        sourceBox = null;
         clearHideProgressTimers();
     }
 
@@ -1894,14 +2020,24 @@
             );
 
             // ----------------------------------------------------
-            // TẢI CẢ HAI NGUỒN: Nhập liệu + Liên thông
+            // TẢI NGUỒN ĐÃ CHỌN: Nhập liệu hoặc Liên thông
             // ----------------------------------------------------
 
             let allData = [];
             let totalElementsExpected = 0;
 
+            const selectedSources =
+                getSelectedCheckupSources();
+
+            console.log(
+                "[KSK Export] Nguồn xuất:",
+                selectedSources
+                    .map(s => s.label)
+                    .join(", ")
+            );
+
             const sourceCount =
-                API_SOURCES.length;
+                selectedSources.length;
 
             for (
                 let sourceIndex = 0;
@@ -1909,7 +2045,7 @@
                 sourceIndex++
             ) {
                 const source =
-                    API_SOURCES[
+                    selectedSources[
                         sourceIndex
                     ];
 
@@ -2180,7 +2316,7 @@
                     totalElementsExpected
             ) {
                 console.warn(
-                    `[KSK Export] API báo ${totalElementsExpected} hồ sơ (cả 2 nguồn), ` +
+                    `[KSK Export] API báo ${totalElementsExpected} hồ sơ, ` +
                     `file có ${excelRows.length} hồ sơ.`
                 );
             }
@@ -2225,7 +2361,7 @@
     function updateUI() {
         if (isCorrectPage()) {
             createUI();
-            syncDateFilterUI();
+            syncFilterUI();
         } else {
             removeUI();
         }

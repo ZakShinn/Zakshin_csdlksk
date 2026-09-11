@@ -61,11 +61,14 @@ Script chạy trên toàn bộ `https://admin.csdlksk.vn/*`. Nút xuất chỉ h
 https://admin.csdlksk.vn/admin/operation/health-checkup
 ```
 
-Sau khi vào đúng trang sẽ xuất hiện nút:
+Sau khi vào đúng trang sẽ xuất hiện thanh chọn nguồn (mặc định **Liên thông**) và nút xuất:
 
 ```text
+[ Nhập liệu ] [ Liên thông ] [ Cả 2 ]
 📊 Xuất Excel
 ```
+
+Chọn **Cả 2** nếu cần xuất đủ hai nguồn. Xuất từng nguồn sẽ nhanh hơn.
 
 Nhấn **Xuất Excel**.
 
@@ -152,6 +155,8 @@ Enter
 
 Script sẽ bắt đầu chạy.
 
+Với trang Health Checkup, mặc định xuất **Liên thông**. Muốn xuất **Nhập liệu** hoặc cả hai, sửa `CHECKUP_SOURCE` trong script (`"Liên thông"` / `"Nhập liệu"` / `"all"`) trước khi dán.
+
 Sau khi hoàn tất, file Excel sẽ tự động được tải về máy.
 
 ## Lưu ý khi dán code vào Console
@@ -172,7 +177,7 @@ Kiểm tra:
 
 ```text
 1. Violentmonkey đã được bật.
-2. Script đã được Enable (phiên bản ≥ 1.10.2, @match = https://admin.csdlksk.vn/*).
+2. Script đã được Enable (phiên bản ≥ 1.15.0, @match = https://admin.csdlksk.vn/*).
 3. Đang ở trang Health Checkup (pathname chứa /admin/operation/health-checkup).
 4. Nếu vừa cập nhật script: tắt/bật lại script hoặc reload bằng Ctrl + F5.
 ```
