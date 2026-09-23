@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.15.0
+// @version      1.19.0
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
+// @connect      admin.csdlksk.vn
 // @connect      api.emrhub.vn
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @run-at       document-idle
@@ -19,21 +20,45 @@
     // ============================================================
 
     // Hai nguồn API: Nhập liệu + Liên thông (/click)
+    // Site dùng cookie phiên (withCredentials) — KHÔNG gửi Bearer
+    // (Bearer sai/cũ sẽ bị HTTP 401). Có header phân trang:
+    // request: x-request-token ← response: x-next-request-token
+    const CHECKUP_REQUEST_OPTS = {
+        method: "GET",
+        formBody: false,
+        usePageFetch: true,
+        withCredentials: true,
+        // cookie-only: không gắn Authorization
+        authMode: "cookie",
+        useContinuationToken: true
+    };
+
     const API_SOURCES = [
         {
             label: "Nhập liệu",
             url:
-                "https://api.emrhub.vn/api/checkup/health-examinations"
+                "https://admin.csdlksk.vn/api/checkup/health-examinations",
+            requestOpts: CHECKUP_REQUEST_OPTS
         },
         {
             label: "Liên thông",
             url:
-                "https://api.emrhub.vn/api/checkup/health-examinations/click"
+                "https://admin.csdlksk.vn/api/checkup/health-examinations/click",
+            requestOpts: CHECKUP_REQUEST_OPTS
         }
     ];
 
     const HEALTH_DATA_API =
-        "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history";
+        "https://admin.csdlksk.vn/api/admin/backoffice/reports/sync-checkup/history";
+
+    // Health Data: cookie phiên + page fetch (giống checkup)
+    const HEALTH_DATA_REQUEST_OPTS = {
+        method: "GET",
+        usePageFetch: true,
+        withCredentials: true,
+        authMode: "cookie",
+        useContinuationToken: false
+    };
 
     const PAGE_SIZE = 100;
 
@@ -714,7 +739,7 @@
     }
 
     // ============================================================
-    // GM REQUEST
+    // GM / PAGE REQUEST
     // ============================================================
 
     function gmRequest(options) {
@@ -732,6 +757,108 @@
                     )
             });
         });
+    }
+
+    async function pageRequest(options) {
+        const response =
+            await fetch(
+                options.url,
+                {
+                    method:
+                        options.method || "GET",
+
+                    credentials:
+                        options.withCredentials === false
+                            ? "omit"
+                            : "include",
+
+                    headers:
+                        options.headers || {},
+
+                    body:
+                        options.data
+                }
+            );
+
+        const responseText =
+            await response.text();
+
+        const responseHeaders = {};
+
+        try {
+            response.headers.forEach(
+                (value, key) => {
+                    responseHeaders[
+                        key.toLowerCase()
+                    ] = value;
+                }
+            );
+        } catch {
+            // ignore
+        }
+
+        return {
+            status: response.status,
+            responseText,
+            responseHeaders
+        };
+    }
+
+    function getResponseHeader(
+        response,
+        name
+    ) {
+        const wanted =
+            String(name).toLowerCase();
+
+        if (
+            response.responseHeaders &&
+            typeof response.responseHeaders ===
+                "object" &&
+            !Array.isArray(
+                response.responseHeaders
+            )
+        ) {
+            return (
+                response.responseHeaders[
+                    wanted
+                ] ||
+                null
+            );
+        }
+
+        const raw =
+            response.responseHeaders;
+
+        if (typeof raw !== "string") {
+            return null;
+        }
+
+        const lines =
+            raw.split(/\r?\n/);
+
+        for (const line of lines) {
+            const idx =
+                line.indexOf(":");
+
+            if (idx === -1) {
+                continue;
+            }
+
+            const key =
+                line
+                    .slice(0, idx)
+                    .trim()
+                    .toLowerCase();
+
+            if (key === wanted) {
+                return line
+                    .slice(idx + 1)
+                    .trim();
+            }
+        }
+
+        return null;
     }
 
     // ============================================================
@@ -786,44 +913,96 @@
         const query =
             params.toString();
 
+        // Query trên URL (như Network của trang)
         const url =
             formBody
                 ? apiUrl
                 : `${apiUrl}?${query}`;
 
+        const usePageFetch =
+            requestOpts.usePageFetch === true ||
+            (
+                typeof location !== "undefined" &&
+                apiUrl.startsWith(
+                    location.origin
+                )
+            );
+
+        // cookie = chỉ cookie phiên (admin.csdlksk.vn)
+        // bearer = Authorization (khi authMode = bearer)
+        const authMode =
+            requestOpts.authMode ||
+            (
+                usePageFetch
+                    ? "cookie"
+                    : "bearer"
+            );
+
         try {
             const headers = {
-                Accept: "application/json",
-
-                Authorization:
-                    `Bearer ${token}`
+                Accept: "application/json"
             };
+
+            if (
+                authMode === "bearer" &&
+                token
+            ) {
+                headers.Authorization =
+                    `Bearer ${token}`;
+            }
+
+            if (
+                requestOpts.useContinuationToken &&
+                requestOpts.continuationToken &&
+                page > 1
+            ) {
+                headers["x-request-token"] =
+                    requestOpts.continuationToken;
+            }
 
             if (formBody) {
                 headers["Content-Type"] =
                     "application/x-www-form-urlencoded";
             }
 
+            const requestOptions = {
+                method,
+
+                url,
+
+                // Trang có base64_ca rất lớn cần timeout dài hơn
+                timeout: 90000,
+
+                headers,
+
+                withCredentials:
+                    requestOpts.withCredentials !== false,
+
+                data: formBody
+                    ? query
+                    : undefined
+            };
+
             const response =
-                await gmRequest({
-                    method,
-
-                    url,
-
-                    // Trang có base64_ca rất lớn cần timeout dài hơn
-                    timeout: 90000,
-
-                    headers,
-
-                    data: formBody
-                        ? query
-                        : undefined
-                });
+                usePageFetch
+                    ? await pageRequest(
+                        requestOptions
+                    )
+                    : await gmRequest(
+                        requestOptions
+                    );
 
             if (
                 response.status < 200 ||
                 response.status >= 300
             ) {
+                if (response.status === 401) {
+                    throw new Error(
+                        "HTTP 401 — phiên đăng nhập hết hạn hoặc thiếu cookie. " +
+                        "Hãy F5 trang, đăng nhập lại nếu cần, rồi xuất lại."
+                    );
+                }
+
                 throw new Error(
                     `HTTP ${response.status}`
                 );
@@ -865,6 +1044,17 @@
                     json.data.data.map(
                         sanitizeExaminationRow
                     );
+            }
+
+            const nextToken =
+                getResponseHeader(
+                    response,
+                    "x-next-request-token"
+                );
+
+            if (nextToken) {
+                json.__continuationToken =
+                    nextToken;
             }
 
             return json;
@@ -1587,82 +1777,148 @@
         );
 
         if (totalPages > 1) {
-            const pages = [];
-
             const lastPageNum =
                 zeroBased
                     ? totalPages - 1
                     : totalPages;
 
-            for (
-                let page = firstPageNum + 1;
-                page <= lastPageNum;
-                page++
-            ) {
-                pages.push(page);
-            }
+            const useContinuation =
+                requestOpts.useContinuationToken === true;
 
-            let completed = 1;
+            // Phân trang có x-request-token phải tuần tự
+            if (useContinuation) {
+                let continuationToken =
+                    first.__continuationToken ||
+                    null;
 
-            const results =
-                await fetchPagesConcurrent(
-                    pages,
-                    token,
-                    source.url,
-                    () => {
-                        completed++;
+                let completed = 1;
 
-                        onProgress?.(
-                            completed,
-                            totalPages,
-                            source.label
+                for (
+                    let page = firstPageNum + 1;
+                    page <= lastPageNum;
+                    page++
+                ) {
+                    const pageOpts = {
+                        ...requestOpts,
+                        continuationToken
+                    };
+
+                    const pageJson =
+                        await fetchPage(
+                            page,
+                            token,
+                            source.url,
+                            0,
+                            pageOpts
                         );
-                    },
-                    requestOpts
-                );
 
-            const failed = [];
+                    const pageRows =
+                        pageJson
+                            ?.data
+                            ?.data;
 
-            results
-                .sort(
-                    (a, b) =>
-                        a.page - b.page
-                )
-                .forEach(result => {
                     if (
-                        result.success
+                        Array.isArray(
+                            pageRows
+                        )
                     ) {
-                        const pageRows =
-                            result
-                                .data
-                                ?.data
-                                ?.data;
-
-                        if (
-                            Array.isArray(
-                                pageRows
+                        rows.push(
+                            ...tagRowsWithSource(
+                                pageRows,
+                                source.label
                             )
-                        ) {
-                            rows.push(
-                                ...tagRowsWithSource(
-                                    pageRows,
-                                    source.label
-                                )
-                            );
-                        }
-
-                    } else {
-                        failed.push(
-                            result.page
                         );
                     }
-                });
 
-            if (failed.length) {
-                throw new Error(
-                    `[${source.label}] Không tải được trang: ` +
-                    failed.join(", ")
-                );
+                    if (
+                        pageJson.__continuationToken
+                    ) {
+                        continuationToken =
+                            pageJson.__continuationToken;
+                    }
+
+                    completed++;
+
+                    onProgress?.(
+                        completed,
+                        totalPages,
+                        source.label
+                    );
+                }
+
+            } else {
+                const pages = [];
+
+                for (
+                    let page = firstPageNum + 1;
+                    page <= lastPageNum;
+                    page++
+                ) {
+                    pages.push(page);
+                }
+
+                let completed = 1;
+
+                const results =
+                    await fetchPagesConcurrent(
+                        pages,
+                        token,
+                        source.url,
+                        () => {
+                            completed++;
+
+                            onProgress?.(
+                                completed,
+                                totalPages,
+                                source.label
+                            );
+                        },
+                        requestOpts
+                    );
+
+                const failed = [];
+
+                results
+                    .sort(
+                        (a, b) =>
+                            a.page - b.page
+                    )
+                    .forEach(result => {
+                        if (
+                            result.success
+                        ) {
+                            const pageRows =
+                                result
+                                    .data
+                                    ?.data
+                                    ?.data;
+
+                            if (
+                                Array.isArray(
+                                    pageRows
+                                )
+                            ) {
+                                rows.push(
+                                    ...tagRowsWithSource(
+                                        pageRows,
+                                        source.label
+                                    )
+                                );
+                            }
+
+                        } else {
+                            failed.push(
+                                result.page
+                            );
+                        }
+                    });
+
+                if (failed.length) {
+                    throw new Error(
+                        `[${source.label}] Không tải được trang: ` +
+                        failed.join(", ")
+                    );
+                }
             }
         }
 
@@ -1707,25 +1963,14 @@
 
             setProgress(
                 2,
-                "🔑 Đang tìm token đăng nhập..."
+                "🔐 Đang kiểm tra phiên đăng nhập..."
             );
 
-            const tokenInfo =
-                findToken();
-
-            if (!tokenInfo?.token) {
-                throw new Error(
-                    "Không tìm thấy access token. " +
-                    "Hãy đăng nhập lại trang rồi thử lại."
-                );
-            }
-
-            const token =
-                tokenInfo.token;
+            // API admin.csdlksk.vn auth bằng cookie phiên.
+            const token = null;
 
             console.log(
-                "[KSK Export][Health Data] Token:",
-                tokenInfo.path
+                "[KSK Export][Health Data] Auth: cookie session"
             );
 
             console.log(
@@ -1747,6 +1992,7 @@
                         url: HEALTH_DATA_API,
                         zeroBasedPages: true,
                         requestOpts: {
+                            ...HEALTH_DATA_REQUEST_OPTS,
                             queryParams: {
                                 start_date:
                                     dateRange.start_date,
@@ -1993,30 +2239,20 @@
 
         try {
             // ----------------------------------------------------
-            // TOKEN
+            // PHIÊN ĐĂNG NHẬP (cookie) — không dùng Bearer
             // ----------------------------------------------------
 
             setProgress(
                 2,
-                "🔑 Đang tìm token đăng nhập..."
+                "🔐 Đang kiểm tra phiên đăng nhập..."
             );
 
-            const tokenInfo =
-                findToken();
-
-            if (!tokenInfo?.token) {
-                throw new Error(
-                    "Không tìm thấy access token. " +
-                    "Hãy đăng nhập lại trang rồi thử lại."
-                );
-            }
-
-            const token =
-                tokenInfo.token;
+            // API admin.csdlksk.vn auth bằng cookie phiên.
+            // Gửi Bearer sai/cũ sẽ bị 401 — nên không dùng token storage.
+            const token = null;
 
             console.log(
-                "[KSK Export] Token:",
-                tokenInfo.path
+                "[KSK Export] Auth: cookie session"
             );
 
             // ----------------------------------------------------

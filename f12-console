@@ -52,12 +52,19 @@
         {
             label: "Nhập liệu",
             url:
-                "https://api.emrhub.vn/api/checkup/health-examinations"
+                "https://admin.csdlksk.vn/api/checkup/health-examinations",
+            usePageCredentials: true,
+            // Cookie session only — Bearer sai/cũ → 401
+            authMode: "cookie",
+            useContinuationToken: true
         },
         {
             label: "Liên thông",
             url:
-                "https://api.emrhub.vn/api/checkup/health-examinations/click"
+                "https://admin.csdlksk.vn/api/checkup/health-examinations/click",
+            usePageCredentials: true,
+            authMode: "cookie",
+            useContinuationToken: true
         }
     ];
 
@@ -68,8 +75,11 @@
             {
                 label: "Health Data",
                 url:
-                    "https://api.emrhub.vn/api/admin/backoffice/reports/sync-checkup/history",
+                    "https://admin.csdlksk.vn/api/admin/backoffice/reports/sync-checkup/history",
                 zeroBasedPages: true,
+                usePageCredentials: true,
+                authMode: "cookie",
+                useContinuationToken: false,
                 queryParams: {
                     start_date:
                         HEALTH_DATA_START,
@@ -690,7 +700,8 @@
         page,
         apiUrl,
         retry = 0,
-        queryParams = {}
+        queryParams = {},
+        requestOpts = {}
     ) {
 
         const params =
@@ -726,7 +737,46 @@
         const url =
             `${apiUrl}?${params.toString()}`;
 
+        const sameOrigin =
+            typeof location !== "undefined" &&
+            apiUrl.startsWith(
+                location.origin
+            );
+
+        const useCredentials =
+            requestOpts.usePageCredentials === true ||
+            sameOrigin;
+
+        // cookie = không Bearer (admin.csdlksk.vn)
+        // bearer = gửi Authorization (api.emrhub.vn)
+        const authMode =
+            requestOpts.authMode ||
+            (
+                useCredentials && sameOrigin
+                    ? "cookie"
+                    : "bearer"
+            );
+
         try {
+
+            const headers = {
+                "Accept":
+                    "application/json"
+            };
+
+            if (authMode === "bearer") {
+                headers.Authorization =
+                    `Bearer ${TOKEN}`;
+            }
+
+            if (
+                requestOpts.useContinuationToken &&
+                requestOpts.continuationToken &&
+                page > 1
+            ) {
+                headers["x-request-token"] =
+                    requestOpts.continuationToken;
+            }
 
             const response =
                 await fetch(
@@ -734,19 +784,12 @@
                     {
                         method: "GET",
 
-                        // QUAN TRỌNG:
-                        // Không gửi cookie để tránh:
-                        // Access-Control-Allow-Origin: *
-                        // + credentials include
-                        credentials: "omit",
+                        credentials:
+                            useCredentials
+                                ? "include"
+                                : "omit",
 
-                        headers: {
-                            "Accept":
-                                "application/json",
-
-                            "Authorization":
-                                `Bearer ${TOKEN}`
-                        }
+                        headers
                     }
                 );
 
@@ -758,6 +801,13 @@
                     errorBody =
                         await response.text();
                 } catch {}
+
+                if (response.status === 401) {
+                    throw new Error(
+                        "HTTP 401 — phiên đăng nhập hết hạn hoặc thiếu cookie. " +
+                        "Hãy F5 / đăng nhập lại rồi chạy lại script."
+                    );
+                }
 
                 throw new Error(
                     `HTTP ${response.status} ${response.statusText}` +
@@ -802,6 +852,16 @@
                     );
             }
 
+            const nextToken =
+                response.headers.get(
+                    "x-next-request-token"
+                );
+
+            if (nextToken) {
+                json.__continuationToken =
+                    nextToken;
+            }
+
             return json;
 
         } catch (error) {
@@ -826,7 +886,8 @@
                     page,
                     apiUrl,
                     retry + 1,
-                    queryParams
+                    queryParams,
+                    requestOpts
                 );
             }
 
@@ -852,6 +913,15 @@
         const queryParams =
             source.queryParams || {};
 
+        const requestOpts = {
+            usePageCredentials:
+                source.usePageCredentials === true,
+            authMode:
+                source.authMode,
+            useContinuationToken:
+                source.useContinuationToken === true
+        };
+
         const zeroBased =
             source.zeroBasedPages === true;
 
@@ -867,7 +937,8 @@
                 firstPageNum,
                 source.url,
                 0,
-                queryParams
+                queryParams,
+                requestOpts
             );
 
         const firstPage =
@@ -932,6 +1003,10 @@
                 ? totalPages - 1
                 : totalPages;
 
+        let continuationToken =
+            firstResponse.__continuationToken ||
+            null;
+
         for (
             let page = firstPageNum + 1;
             page <= lastPageNum;
@@ -940,12 +1015,18 @@
 
             try {
 
+                const pageOpts = {
+                    ...requestOpts,
+                    continuationToken
+                };
+
                 const json =
                     await fetchPage(
                         page,
                         source.url,
                         0,
-                        queryParams
+                        queryParams,
+                        pageOpts
                     );
 
                 const data =
@@ -959,6 +1040,13 @@
                         : [];
 
                 rows.push(...data);
+
+                if (
+                    json.__continuationToken
+                ) {
+                    continuationToken =
+                        json.__continuationToken;
+                }
 
                 const doneCount =
                     zeroBased
@@ -1015,7 +1103,8 @@
                             page,
                             source.url,
                             0,
-                            queryParams
+                            queryParams,
+                            requestOpts
                         );
 
                     const data =
