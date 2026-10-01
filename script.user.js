@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.19.0
+// @version      1.20.0
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
@@ -75,159 +75,524 @@
             "/admin/operation/health-data"
     };
 
-    // Field API không dùng khi xuất Excel (vd. PDF base64 rất lớn)
-    const EXCLUDED_EXPORT_FIELDS = [
-        "base64_ca"
+    // Chuỗi dài hơn mức này bị bỏ (PDF/base64 làm Excel lỗi hoặc hết bộ nhớ).
+    // Excel chỉ chứa tối đa 32.767 ký tự/ô.
+    const MAX_EXPORT_STRING = 8000;
+
+    const EXCLUDED_FIELD_NAME =
+        /base64|pdf_content|file_content|signature_image|raw_file|binary/i;
+
+    // Thứ tự cột quen thuộc. Field mới không có trong danh sách sẽ được thêm sau.
+    const PREFERRED_EXPORT_FIELDS = [
+        "patient_id",
+        "check_up_id",
+        "ngay_kham",
+        "status",
+        "type",
+        "times",
+        "full_name",
+        "id_number",
+        "date_of_birth",
+        "gender",
+        "detail_address",
+        "ma_loai_kcb",
+        "facility_name",
+        "ma_csgd",
+        "ten_csgd",
+        "ma_csktsk",
+        "doctor_name",
+        "doctor_citizen_id",
+        "id",
+        "facility_code",
+        "txn_type",
+        "ten_bn",
+        "created_at",
+        "res_message"
     ];
+
+    const FIELD_LABELS = {
+        patient_id: "Patient ID",
+        check_up_id: "Check Up ID",
+        ngay_kham: "Ngày khám",
+        status: "Trạng thái",
+        type: "Loại",
+        times: "Lần khám",
+        full_name: "Họ và tên",
+        id_number: "CCCD",
+        date_of_birth: "Ngày sinh",
+        gender: "Giới tính",
+        detail_address: "Địa chỉ",
+        ma_loai_kcb: "Mã loại KCB",
+        facility_name: "Cơ sở",
+        ma_csgd: "Mã CSGD",
+        ten_csgd: "Tên CSGD",
+        ma_csktsk: "Mã CSKTSK",
+        doctor_name: "Bác sĩ",
+        doctor_citizen_id: "CCCD bác sĩ",
+        _nguon: "Nguồn",
+        id: "ID",
+        facility_code: "Mã CSYT",
+        txn_type: "Loại GD",
+        ten_bn: "Họ và tên BN",
+        created_at: "Thời gian",
+        res_message: "Thông báo"
+    };
+
+    const droppedExportFields = new Set();
+
+    function isExcludedFieldName(name) {
+        return EXCLUDED_FIELD_NAME.test(
+            String(name || "")
+        );
+    }
+
+    function isTextColumnKey(key) {
+        return /id_number|citizen|cccd|ma_cs|facility_code|ma_cskb|code$/i
+            .test(String(key || ""));
+    }
+
+    function rememberDroppedField(name) {
+        if (name) {
+            droppedExportFields.add(String(name));
+        }
+    }
 
     function sanitizeExaminationRow(item) {
         if (!item || typeof item !== "object") {
             return item;
         }
 
-        const cleaned = { ...item };
+        const cleaned = {};
 
-        for (const field of EXCLUDED_EXPORT_FIELDS) {
-            delete cleaned[field];
+        for (const [key, value] of Object.entries(item)) {
+            if (key.startsWith("_")) {
+                cleaned[key] = value;
+                continue;
+            }
+
+            if (isExcludedFieldName(key)) {
+                rememberDroppedField(key);
+                continue;
+            }
+
+            if (typeof value === "string") {
+                if (value.length > MAX_EXPORT_STRING) {
+                    rememberDroppedField(key);
+                    continue;
+                }
+
+                cleaned[key] = value;
+                continue;
+            }
+
+            if (value && typeof value === "object") {
+                let serialized = "";
+
+                try {
+                    serialized = JSON.stringify(value);
+                } catch {
+                    rememberDroppedField(key);
+                    continue;
+                }
+
+                if (
+                    !serialized ||
+                    serialized.length > MAX_EXPORT_STRING
+                ) {
+                    rememberDroppedField(key);
+                    continue;
+                }
+
+                cleaned[key] = value;
+                continue;
+            }
+
+            cleaned[key] = value;
         }
 
         return cleaned;
     }
 
-    // Cắt field lớn (PDF base64) ngay trên chuỗi response trước JSON.parse
-    // để tránh OOM / timeout khi trang có hồ sơ completed.
+    // Cắt string quá lớn ngay trên chuỗi response trước JSON.parse
+    // để tránh OOM / timeout (PDF base64, field tên lạ nhưng rất dài).
     function stripExcludedFieldsFromJsonText(text) {
         if (!text || typeof text !== "string") {
             return text;
         }
 
-        let result = text;
+        let output = "";
+        let i = 0;
 
-        for (const field of EXCLUDED_EXPORT_FIELDS) {
-            const key = `"${field}"`;
-            let output = "";
-            let i = 0;
+        while (i < text.length) {
+            const quote = text.indexOf('"', i);
 
-            while (true) {
-                const start =
-                    result.indexOf(key, i);
-
-                if (start === -1) {
-                    output +=
-                        result.slice(i);
-                    break;
-                }
-
-                let j =
-                    start + key.length;
-
-                while (
-                    j < result.length &&
-                    /\s/.test(result[j])
-                ) {
-                    j++;
-                }
-
-                if (result[j] !== ":") {
-                    output +=
-                        result.slice(
-                            i,
-                            start + key.length
-                        );
-                    i =
-                        start + key.length;
-                    continue;
-                }
-
-                j++;
-
-                while (
-                    j < result.length &&
-                    /\s/.test(result[j])
-                ) {
-                    j++;
-                }
-
-                if (result[j] !== '"') {
-                    // Không phải string → bỏ qua
-                    output +=
-                        result.slice(
-                            i,
-                            start + key.length
-                        );
-                    i =
-                        start + key.length;
-                    continue;
-                }
-
-                j++;
-
-                while (
-                    j < result.length &&
-                    result[j] !== '"'
-                ) {
-                    // Base64 thường không escape; vẫn bỏ qua \"
-                    if (
-                        result[j] === "\\" &&
-                        j + 1 < result.length
-                    ) {
-                        j += 2;
-                        continue;
-                    }
-
-                    j++;
-                }
-
-                if (j >= result.length) {
-                    output +=
-                        result.slice(i);
-                    break;
-                }
-
-                j++;
-
-                let removeStart = start;
-                let k = start - 1;
-
-                while (
-                    k >= i &&
-                    /\s/.test(result[k])
-                ) {
-                    k--;
-                }
-
-                if (
-                    k >= i &&
-                    result[k] === ","
-                ) {
-                    removeStart = k;
-                } else {
-                    let m = j;
-
-                    while (
-                        m < result.length &&
-                        /\s/.test(result[m])
-                    ) {
-                        m++;
-                    }
-
-                    if (result[m] === ",") {
-                        j = m + 1;
-                    }
-                }
-
-                output +=
-                    result.slice(
-                        i,
-                        removeStart
-                    );
-                i = j;
+            if (quote === -1) {
+                output += text.slice(i);
+                break;
             }
 
-            result = output;
+            let j = quote + 1;
+            let escaped = false;
+
+            while (j < text.length) {
+                const ch = text[j];
+
+                if (escaped) {
+                    escaped = false;
+                    j++;
+                    continue;
+                }
+
+                if (ch === "\\") {
+                    escaped = true;
+                    j++;
+                    continue;
+                }
+
+                if (ch === '"') {
+                    break;
+                }
+
+                j++;
+            }
+
+            if (j >= text.length) {
+                output += text.slice(i);
+                break;
+            }
+
+            const token = text.slice(quote + 1, j);
+            let k = j + 1;
+
+            while (
+                k < text.length &&
+                /\s/.test(text[k])
+            ) {
+                k++;
+            }
+
+            if (text[k] !== ":") {
+                output += text.slice(i, j + 1);
+                i = j + 1;
+                continue;
+            }
+
+            k++;
+
+            while (
+                k < text.length &&
+                /\s/.test(text[k])
+            ) {
+                k++;
+            }
+
+            if (text[k] !== '"') {
+                output += text.slice(i, j + 1);
+                i = j + 1;
+                continue;
+            }
+
+            let v = k + 1;
+            let valueEscaped = false;
+            let valueLength = 0;
+
+            while (v < text.length) {
+                const ch = text[v];
+
+                if (valueEscaped) {
+                    valueEscaped = false;
+                    v++;
+                    valueLength++;
+                    continue;
+                }
+
+                if (ch === "\\") {
+                    valueEscaped = true;
+                    v++;
+                    continue;
+                }
+
+                if (ch === '"') {
+                    break;
+                }
+
+                v++;
+                valueLength++;
+            }
+
+            const drop =
+                isExcludedFieldName(token) ||
+                valueLength > MAX_EXPORT_STRING;
+
+            if (!drop || v >= text.length) {
+                output += text.slice(i, j + 1);
+                i = j + 1;
+                continue;
+            }
+
+            rememberDroppedField(token);
+
+            let removeStart = quote;
+            let before = quote - 1;
+
+            while (
+                before >= i &&
+                /\s/.test(text[before])
+            ) {
+                before--;
+            }
+
+            let removeEnd = v + 1;
+
+            if (
+                before >= i &&
+                text[before] === ","
+            ) {
+                removeStart = before;
+            } else {
+                let after = removeEnd;
+
+                while (
+                    after < text.length &&
+                    /\s/.test(text[after])
+                ) {
+                    after++;
+                }
+
+                if (text[after] === ",") {
+                    removeEnd = after + 1;
+                }
+            }
+
+            output += text.slice(i, removeStart);
+            i = removeEnd;
         }
 
-        return result;
+        return output;
+    }
+
+    function cleanExportText(value) {
+        return String(value)
+            .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+            .replace(/[\t\r\n]+/g, " ")
+            .replace(/ {2,}/g, " ")
+            .trim();
+    }
+
+    function formatExportValue(key, value) {
+        if (value == null) {
+            return "";
+        }
+
+        if (key === "gender") {
+            if (value === "male") {
+                return "Nam";
+            }
+
+            if (value === "female") {
+                return "Nữ";
+            }
+        }
+
+        if (
+            key === "ngay_kham" ||
+            key === "created_at" ||
+            /(^ngay_|_at$|datetime)/i.test(key)
+        ) {
+            return formatDateTime(value);
+        }
+
+        if (
+            key === "date_of_birth" ||
+            /birth|ngay_sinh/i.test(key)
+        ) {
+            return formatDate(value);
+        }
+
+        if (typeof value === "string") {
+            const text = cleanExportText(value);
+
+            if (text.length > 32000) {
+                return text.slice(0, 32000);
+            }
+
+            return text;
+        }
+
+        if (typeof value === "number" || typeof value === "boolean") {
+            if (isTextColumnKey(key)) {
+                return String(value);
+            }
+
+            return value;
+        }
+
+        if (typeof value === "object") {
+            try {
+                const serialized = JSON.stringify(value);
+
+                if (
+                    !serialized ||
+                    serialized.length > MAX_EXPORT_STRING
+                ) {
+                    rememberDroppedField(key);
+                    return "";
+                }
+
+                return serialized;
+            } catch {
+                return "";
+            }
+        }
+
+        return cleanExportText(value);
+    }
+
+    function collectExportFieldKeys(items) {
+        const seen = new Set();
+
+        for (const item of items) {
+            if (!item || typeof item !== "object") {
+                continue;
+            }
+
+            for (const key of Object.keys(item)) {
+                if (key.startsWith("_") && key !== "_nguon") {
+                    continue;
+                }
+
+                seen.add(key);
+            }
+        }
+
+        const ordered = PREFERRED_EXPORT_FIELDS.filter(
+            key => seen.has(key)
+        );
+
+        const extras = [...seen]
+            .filter(key =>
+                key !== "_nguon" &&
+                !PREFERRED_EXPORT_FIELDS.includes(key)
+            )
+            .sort();
+
+        ordered.push(...extras);
+
+        if (seen.has("_nguon")) {
+            ordered.push("_nguon");
+        }
+
+        return ordered;
+    }
+
+    function labelForField(key, usedLabels) {
+        let label = FIELD_LABELS[key] || key;
+
+        if (usedLabels.has(label)) {
+            label = `${label} (${key})`;
+        }
+
+        usedLabels.add(label);
+        return label;
+    }
+
+    function rowsToExcelObjects(items) {
+        if (droppedExportFields.size) {
+            console.warn(
+                "[KSK Export] Bỏ field quá lớn, không đưa vào Excel: " +
+                [...droppedExportFields].join(", ")
+            );
+            droppedExportFields.clear();
+        }
+
+        const fieldKeys = collectExportFieldKeys(items);
+        const usedLabels = new Set(["STT"]);
+        const labels = fieldKeys.map(key =>
+            labelForField(key, usedLabels)
+        );
+
+        const excelRows = items.map((item, index) => {
+            const row = {
+                STT: index + 1
+            };
+
+            fieldKeys.forEach((key, col) => {
+                row[labels[col]] =
+                    key === "_nguon"
+                        ? (item?._nguon ?? "")
+                        : formatExportValue(
+                            key,
+                            item?.[key]
+                        );
+            });
+
+            return row;
+        });
+
+        return {
+            excelRows,
+            fieldKeys,
+            labels
+        };
+    }
+
+    function prepareWorksheet(ws, fieldKeys, labels) {
+        ws["!cols"] = [
+            { wch: 8 },
+            ...labels.map((label, index) => {
+                const key = fieldKeys[index] || "";
+                let width = Math.min(
+                    42,
+                    Math.max(10, String(label).length + 2)
+                );
+
+                if (
+                    /address|detail_address|res_message|full_name|facility_name|ten_|doctor_name/i
+                        .test(key)
+                ) {
+                    width = Math.max(width, 28);
+                }
+
+                return { wch: width };
+            })
+        ];
+
+        if (!ws["!ref"]) {
+            return;
+        }
+
+        ws["!autofilter"] = {
+            ref: ws["!ref"]
+        };
+
+        const range = XLSX.utils.decode_range(ws["!ref"]);
+
+        for (let c = 1; c <= range.e.c; c++) {
+            const key = fieldKeys[c - 1];
+
+            if (!isTextColumnKey(key)) {
+                continue;
+            }
+
+            for (let r = 1; r <= range.e.r; r++) {
+                const address = XLSX.utils.encode_cell({
+                    r,
+                    c
+                });
+                const cell = ws[address];
+
+                if (!cell) {
+                    continue;
+                }
+
+                cell.t = "s";
+                cell.z = "@";
+
+                if (cell.v != null) {
+                    cell.v = String(cell.v);
+                }
+            }
+        }
     }
 
     // ============================================================
@@ -2056,40 +2421,11 @@
             const rows =
                 [...unique.values()];
 
+            const sheet =
+                rowsToExcelObjects(rows);
+
             const excelRows =
-                rows.map(
-                    (item, index) => ({
-                        "STT":
-                            index + 1,
-
-                        "ID":
-                            item.id ?? "",
-
-                        "Mã CSYT":
-                            item.facility_code != null
-                                ? String(
-                                    item.facility_code
-                                )
-                                : "",
-
-                        "Loại GD":
-                            item.txn_type ?? "",
-
-                        "Họ và tên BN":
-                            item.ten_bn ?? "",
-
-                        "Trạng thái":
-                            item.status ?? "",
-
-                        "Thời gian":
-                            formatDateTime(
-                                item.created_at
-                            ),
-
-                        "Thông báo":
-                            item.res_message ?? ""
-                    })
-                );
+                sheet.excelRows;
 
             setProgress(
                 95,
@@ -2101,48 +2437,11 @@
                     excelRows
                 );
 
-            ws["!cols"] = [
-                { wch: 8 },
-                { wch: 38 },
-                { wch: 18 },
-                { wch: 14 },
-                { wch: 28 },
-                { wch: 12 },
-                { wch: 20 },
-                { wch: 40 }
-            ];
-
-            if (ws["!ref"]) {
-                ws["!autofilter"] = {
-                    ref: ws["!ref"]
-                };
-
-                const range =
-                    XLSX.utils.decode_range(
-                        ws["!ref"]
-                    );
-
-                // Ép Mã CSYT thành text
-                for (
-                    let r = 1;
-                    r <= range.e.r;
-                    r++
-                ) {
-                    const address =
-                        XLSX.utils.encode_cell({
-                            r,
-                            c: 2
-                        });
-
-                    const cell =
-                        ws[address];
-
-                    if (cell) {
-                        cell.t = "s";
-                        cell.z = "@";
-                    }
-                }
-            }
+            prepareWorksheet(
+                ws,
+                sheet.fieldKeys,
+                sheet.labels
+            );
 
             const wb =
                 XLSX.utils.book_new();
@@ -2381,63 +2680,11 @@
             // EXCEL ROWS
             // ----------------------------------------------------
 
+            const sheet =
+                rowsToExcelObjects(allData);
+
             const excelRows =
-                allData.map(
-                    (item, index) => ({
-                        "STT":
-                            index + 1,
-
-                        "Patient ID":
-                            item.patient_id ?? "",
-
-                        "Check Up ID":
-                            item.check_up_id ?? "",
-
-                        "Ngày khám":
-                            formatDateTime(
-                                item.ngay_kham
-                            ),
-
-                        "Trạng thái":
-                            item.status ?? "",
-
-                        "Loại":
-                            item.type ?? "",
-
-                        "Lần khám":
-                            item.times ?? "",
-
-                        "Họ và tên":
-                            item.full_name ?? "",
-
-                        "CCCD":
-                            item.id_number != null
-                                ? String(
-                                    item.id_number
-                                )
-                                : "",
-
-                        "Ngày sinh":
-                            formatDate(
-                                item.date_of_birth
-                            ),
-
-                        "Giới tính":
-                            item.gender === "male"
-                                ? "Nam"
-                                : item.gender === "female"
-                                    ? "Nữ"
-                                    : (
-                                        item.gender ?? ""
-                                    ),
-
-                        "Địa chỉ":
-                            item.detail_address ?? "",
-
-                        "Nguồn":
-                            item._nguon ?? ""
-                    })
-                );
+                sheet.excelRows;
 
             // ----------------------------------------------------
             // XLSX
@@ -2453,56 +2700,11 @@
                     excelRows
                 );
 
-            ws["!cols"] = [
-                { wch: 8 },
-                { wch: 15 },
-                { wch: 15 },
-                { wch: 20 },
-                { wch: 15 },
-                { wch: 12 },
-                { wch: 10 },
-                { wch: 30 },
-                { wch: 20 },
-                { wch: 15 },
-                { wch: 12 },
-                { wch: 50 },
-                { wch: 12 }
-            ];
-
-            // Auto filter
-            if (ws["!ref"]) {
-                ws["!autofilter"] = {
-                    ref: ws["!ref"]
-                };
-            }
-
-            // Ép CCCD thành text
-            if (ws["!ref"]) {
-                const range =
-                    XLSX.utils.decode_range(
-                        ws["!ref"]
-                    );
-
-                for (
-                    let r = 1;
-                    r <= range.e.r;
-                    r++
-                ) {
-                    const address =
-                        XLSX.utils.encode_cell({
-                            r,
-                            c: 8
-                        });
-
-                    const cell =
-                        ws[address];
-
-                    if (cell) {
-                        cell.t = "s";
-                        cell.z = "@";
-                    }
-                }
-            }
+            prepareWorksheet(
+                ws,
+                sheet.fieldKeys,
+                sheet.labels
+            );
 
             const wb =
                 XLSX.utils.book_new();
