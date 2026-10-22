@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hỗ trợ xuất Excel DS CSDL KSK admin.csdlksk.vn
 // @namespace    https://hainghia.net/
-// @version      1.20.0
+// @version      1.20.1
 // @description  Xuất Excel DS khám sức khỏe + lịch sử sync checkup từ csdlksk
 // @match        https://admin.csdlksk.vn/*
 // @grant        GM_xmlhttpRequest
