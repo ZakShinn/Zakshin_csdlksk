@@ -105,7 +105,10 @@
         "id",
         "facility_code",
         "txn_type",
+        "tran_id",
         "ten_bn",
+        "status_sync",
+        "ly_do",
         "created_at",
         "res_message"
     ];
@@ -133,7 +136,10 @@
         id: "ID",
         facility_code: "Mã CSYT",
         txn_type: "Loại GD",
+        tran_id: "Mã giao dịch",
         ten_bn: "Họ và tên BN",
+        status_sync: "Trạng thái đồng bộ",
+        ly_do: "Lý do",
         created_at: "Thời gian",
         res_message: "Thông báo"
     };
